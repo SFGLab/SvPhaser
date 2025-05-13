@@ -8,7 +8,7 @@ Our project aims to develop an advanced pipeline to **phase structural variants 
 
 ---
 
-## 🚀 System Requirements
+## 🚀 System Requirements 
 
 * OS: Ubuntu 22.04 or other modern Linux distributions (recommended via WSL2 or native installation)
 * CPU: Intel i7 9th gen or higher
@@ -24,7 +24,7 @@ Our project aims to develop an advanced pipeline to **phase structural variants 
 * `whatshap_phased.vcf.gz`: Phased SNP VCF
 * `whatshap_phased.vcf.gz.tbi`: VCF index
 
-**Linux/WSL note:** datasets are accessible via mounted drives (`/mnt/e/` in WSL for E drive; normal paths in native Linux).
+
 
 ---
 
