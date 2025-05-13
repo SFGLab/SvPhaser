@@ -1,0 +1,11 @@
+samtools
+bcftools
+bedtools
+whatshap
+svim
+matplotlib
+scikit-learn
+numpy
+pandas
+pysam
+# (Add sniffles manually via conda)
