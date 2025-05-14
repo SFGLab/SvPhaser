@@ -57,7 +57,7 @@ Example dataset:
 
 **Note:** We do not detect SVs. We phase existing SVs using phased BAM + phased SNPs.
 
-**Workflow Image:** Refer to `Pipeline_Diagram.png` in the repo for full visual overview.
+**Workflow Image:** Refer to ![Phasing SV Pipeline](./Pipeline_Diagram.png) in the repo for full visual overview.
 
 ### Input Requirements
 
@@ -181,7 +181,6 @@ pandas
 pysam
 ```
 
-(*Sniffles is recommended to be installed via conda*)
 
 ---
 
