@@ -164,7 +164,7 @@ We made some ammenmends and made the vcf file more informative which is compatib
 
 | System | CPU | RAM | Runtime | Dataset Size |
 |--------|-----|-----|---------|--------------|
-| Workstation (Linux) | 32 cores | 256 GB | ~30 minutes | Full human genome (30x) |
+| Workstation (Linux) | 14 cores | 256 GB | ~30 minutes | Full human genome (30x) |
 | Laptop (WSL2, i7-9th Gen) | 4 cores | 24 GB | ~5-7 hours | Full human genome (30x) |
 
 ✅ Scales linearly with number of CPU cores.  
