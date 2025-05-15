@@ -101,12 +101,47 @@ output_folder/
 
 ---
 
+## 📝 Our Approach
+
+- Designed to assign haplotypes to pre-detected structural variants (SVs) using phased long-read BAM alignments.
+- Extracts HP-tagged reads overlapping SV regions.
+- Assigns SVs to haplotype 1 or 2 by majority of supporting reads.
+- Marks SV as HP1_HP2 (CSV) / 1|1 (VCF) when equal support exists.
+- Marks SV as unphased (unknown / ./. in VCF) if below read support threshold.
+- Marks ambiguous SVs when equal support exists.
+- Runs efficiently in parallel on chromosome-split datasets.
+- Outputs per-chromosome CSVs, a merged CSV, and final phased VCF file.
+
+---
+
+## 📊 Results of Our Analysis
+
+### 1️⃣ Overlap of Phased SV Sets
+
+This pie chart summarizes overlap between diploid-phased SVs and alignment-based phased SVs using a 1bp overlap threshold.
+
+![Overlap of Phased SV Sets](output/graphs/overlap_phased_sv_sets_piechart.png)
+
+### 2️⃣ IGV Validation of Phased SV
+
+An example IGV screenshot showing an unphased SV (original), the same SV successfully phased by SvPhaser, and confirmation in the diploid assembly.
+
+![IGV Validation of Phased SV](output/graphs/igv_phased_sv_validation_chr16.png)
+
+### 3️⃣ Haplotype Assignment Distribution
+
+Bar plot showing SV assignment frequencies by haplotype with min_support=10. Majority of SVs are confidently assigned to HP1 or HP2.
+
+![SV Phasing Results](output/graphs/sv_phasing_results_min_support_10_barplot.png)
+
+---
+
 ## 📊 Benchmarking
 
 | System | CPU | RAM | Runtime | Dataset Size |
 |--------|-----|-----|---------|--------------|
-| Workstation (Linux) | 32 cores | 256 GB | ~10 minutes | Full human genome (30x) |
-| Laptop (WSL2, i7-9th Gen) | 4 cores | 24 GB | ~45 min - 1 hours | Full human genome (30x) |
+| Workstation (Linux) | 32 cores | 256 GB | ~30 minutes | Full human genome (30x) |
+| Laptop (WSL2, i7-9th Gen) | 4 cores | 24 GB | ~5-7 hours | Full human genome (30x) |
 
 ✅ Scales linearly with number of CPU cores.  
 ✅ Fully memory-safe even on small systems.
@@ -114,6 +149,8 @@ output_folder/
 ---
 
 ## 📈 Pipeline Workflow
+
+![Phasing SV Pipeline](output/Pipeline_Diagram.png)
 
 ```
 Input: Phased BAM + Unphased SV VCF
@@ -149,8 +186,8 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## 📬 Contact
 
-Developed by: Team5 (BioAI Hackathon):Sachin Gadakh, Pranjul Mishra  
-Lead Contact: [pranjul.mishra@proton.me] [s.gadakh@cent.uw.edu.pl]
+Developed by: Team5 (BioAI Hackathon): Sachin Gadakh, Pranjul Mishra  
+Lead Contacts: [pranjul.mishra@proton.me], [s.gadakh@cent.uw.edu.pl]  
 
 Feel free to submit issues, feature requests, or contribute via GitHub!
 
