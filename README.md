@@ -3,7 +3,7 @@
 [![PyPI version](https://badge.fury.io/py/svphaser.svg)](https://badge.fury.io/py/svphaser)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Structural Variant Phasing Tool Using Phased BAM and Unphased SV VCF — Developed by Team5 (BioAI Hackathon)
+Structural Variant Phasing Tool for Long-reads based Phased BAM - Developed by Team5 (BioAI Hackathon)
 
 ---
 
@@ -16,6 +16,24 @@ Structural Variant Phasing Tool Using Phased BAM and Unphased SV VCF — Develop
 Unlike traditional SV callers, **SvPhaser does not call new SVs** — it assigns haplotypes to **existing SVs** based on read evidence.
 
 ---
+
+## 📈 Pipeline Workflow
+
+![Phasing SV Pipeline](Output/Pipeline_Diagram.png)
+
+```
+Input: Phased BAM + Unphased SV VCF
+↓
+Parallel chromosome-wise read extraction
+↓
+Read support evaluation & haplotype assignment
+↓
+Merged CSV creation
+↓
+Phased SV VCF writing
+↓
+Final Output
+```
 
 ## 🚀 Key Features
 
@@ -107,8 +125,7 @@ output_folder/
 - Extracts HP-tagged reads overlapping SV regions.
 - Assigns SVs to haplotype 1 or 2 by majority of supporting reads.
 - Marks SV as HP1_HP2 (CSV) / 1|1 (VCF) when equal support exists.
-- Marks SV as unphased (unknown / ./. in VCF) if below read support threshold.
-- Marks ambiguous SVs when equal support exists.
+- Marks SV as unphased (unphased / ./. in VCF) if below read support threshold.
 - Runs efficiently in parallel on chromosome-split datasets.
 - Outputs per-chromosome CSVs, a merged CSV, and final phased VCF file.
 
@@ -155,25 +172,6 @@ We made some ammenmends and made the vcf file more informative which is compatib
 
 ---
 
-## 📈 Pipeline Workflow
-
-![Phasing SV Pipeline](Output/Pipeline_Diagram.png)
-
-```
-Input: Phased BAM + Unphased SV VCF
-↓
-Parallel chromosome-wise read extraction
-↓
-Read support evaluation & haplotype assignment
-↓
-Merged CSV creation
-↓
-Phased SV VCF writing
-↓
-Final Output
-```
-
----
 
 ## 💎 Novel Contributions
 
