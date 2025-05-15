@@ -34,6 +34,17 @@ Phased SV VCF writing
 ↓
 Final Output
 ```
+## 📝 Our Approach
+
+- Designed to assign haplotypes to pre-detected structural variants (SVs) using phased long-read BAM alignments.
+- Extracts HP-tagged reads overlapping SV regions.
+- Assigns SVs to haplotype 1 or 2 by majority of supporting reads.
+- Marks SV as HP1_HP2 (CSV) / 1|1 (VCF) when equal support exists.
+- Marks SV as unphased (unphased / ./. in VCF) if below read support threshold.
+- Runs efficiently in parallel on chromosome-split datasets.
+- Outputs per-chromosome CSVs, a merged CSV, and final phased VCF file.
+
+---
 
 ## 🚀 Key Features
 
@@ -117,19 +128,6 @@ output_folder/
 │   ├── {input_vcf_name}_phased.vcf
 ```
 
----
-
-## 📝 Our Approach
-
-- Designed to assign haplotypes to pre-detected structural variants (SVs) using phased long-read BAM alignments.
-- Extracts HP-tagged reads overlapping SV regions.
-- Assigns SVs to haplotype 1 or 2 by majority of supporting reads.
-- Marks SV as HP1_HP2 (CSV) / 1|1 (VCF) when equal support exists.
-- Marks SV as unphased (unphased / ./. in VCF) if below read support threshold.
-- Runs efficiently in parallel on chromosome-split datasets.
-- Outputs per-chromosome CSVs, a merged CSV, and final phased VCF file.
-
----
 
 ## 📊 Results of Our Analysis
 
