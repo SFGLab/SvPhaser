@@ -40,8 +40,8 @@ Unlike traditional SV callers, **SvPhaser does not call new SVs** — it assigns
 
 ### 1. Clone repository
 ```bash
-git clone https://github.com/SFGLab/Team5_Phased_SV_Analysis.git
-cd Team5_Phased_SV_Analysis/SvPhaser
+git clone https://github.com/SFGLab/SvPhaser.git
+cd SvPhaser/SvPhaser
 ```
 
 ### 2. Install via pip
