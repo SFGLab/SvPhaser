@@ -120,20 +120,27 @@ output_folder/
 
 This pie chart summarizes overlap between diploid-phased SVs and alignment-based phased SVs using a 1bp overlap threshold.
 
-![Overlap of Phased SV Sets](output/graphs/overlap_phased_sv_sets_piechart.png)
+![Overlap of Phased SV Sets](Output/graphs/overlap_phased_sv_sets_piechart.png)
 
 ### 2️⃣ IGV Validation of Phased SV
 
 An example IGV screenshot showing an unphased SV (original), the same SV successfully phased by SvPhaser, and confirmation in the diploid assembly.
 
-![IGV Validation of Phased SV](output/graphs/igv_phased_sv_validation_chr16.png)
+![IGV Validation of Phased SV](Output/graphs/igv_phased_sv_validation_chr16.png)
 
 ### 3️⃣ Haplotype Assignment Distribution
 
 Bar plot showing SV assignment frequencies by haplotype with min_support=10. Majority of SVs are confidently assigned to HP1 or HP2.
 
-![SV Phasing Results](output/graphs/sv_phasing_results_min_support_10_barplot.png)
+![SV Phasing Results](Output/graphs/sv_phasing_results_min_support_10_barplot.png)
 
+![Distribution Description](Output/graphs/Distribution_Description.png) 
+
+
+### How will VCF Phased Output look like ? 
+We made some ammenmends and made the vcf file more informative which is compatible with IGV so no error with the changes 
+![Phased VCF Output File](Output/graphs/Vcf_output_phased.png) 
+ 
 ---
 
 ## 📊 Benchmarking
@@ -150,7 +157,7 @@ Bar plot showing SV assignment frequencies by haplotype with min_support=10. Maj
 
 ## 📈 Pipeline Workflow
 
-![Phasing SV Pipeline](output/Pipeline_Diagram.png)
+![Phasing SV Pipeline](Output/Pipeline_Diagram.png)
 
 ```
 Input: Phased BAM + Unphased SV VCF
