@@ -1,194 +1,175 @@
-# Team5\_Phased\_SV\_Analysis
+# SvPhaser
 
-# Phasing Structural Variants Using Phased Aligned Data - BioAI Hackathon Team
+[![PyPI version](https://badge.fury.io/py/svphaser.svg)](https://badge.fury.io/py/svphaser)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
-
-## 🔬 Project Objective
-
-We aim to create a state-of-the-art pipeline to **phase structural variants (SVs) in human genomes** using **phased aligned data**. Unlike traditional SV calling pipelines, we focus purely on **assigning haplotypes to pre-detected SVs** by leveraging phased SNPs and phased BAM alignments. Our workflow introduces a novel algorithm for SV-to-haplotype assignment with optional machine learning support for ambiguous cases.
+Structural Variant Phasing Tool Using Phased BAM and Unphased SV VCF — Developed by Team5 (BioAI Hackathon)
 
 ---
 
-## 🚀 System Requirements
+## 🧬 Overview
 
-* OS: Ubuntu 22.04 or WSL2 (recommended)
-* CPU: Intel i7 9th gen or better
-* RAM: 16 GB minimum (24 GB recommended)
-* Disk Space: \~100 GB for large genome datasets
+**SvPhaser** is a lightweight, fast, and scalable tool for **phasing structural variants (SVs)** in human genomes by leveraging:
+- **Phased aligned BAM files** (containing HP tags)
+- **Unphased structural variant VCF files**
 
----
-
-## 📀 Dataset Information
-
-**Required Inputs:**
-
-* Phased aligned BAM file (**must contain HP tags**)
-* BAM index file (.bai)
-* Phased SNP VCF file
-* VCF index file (.tbi)
-* Pre-called SV VCF file (from external caller e.g., Sniffles2, SVIM)
-
-Example dataset:
-
-* `HG00733.sorted_phased.bam`
-* `HG00733.sorted_phased.bam.bai`
-* `whatshap_phased.vcf.gz`
-* `whatshap_phased.vcf.gz.tbi`
-* `HG00733_SVs.vcf`
+Unlike traditional SV callers, **SvPhaser does not call new SVs** — it assigns haplotypes to **existing SVs** based on read evidence.
 
 ---
 
-## 🛠️ Tools & Dependencies
+## 🚀 Key Features
 
-* samtools
-* bcftools
-* whatshap
-* minimap2
-* sniffles2 (via conda)
-* svim
-* bedtools
-* python3 + pip
-* scikit-learn, pytorch/tensorflow (optional for ML enhancement)
+- Parallel chromosome-wise SV phasing
+- Flexible minimum read support threshold
+- Outputs phased SV VCF with GT and DP fields
+- Fast processing with low memory usage
+- Pip-installable + easy CLI interface
 
 ---
 
-## 📅 Pipeline Overview
+## ⚙️ System Requirements
 
-**Note:** We do not detect SVs. We phase existing SVs using phased BAM + phased SNPs.
+- OS: Linux / WSL2 (Ubuntu 22.04 recommended)
+- Python: >= 3.6
+- CPU: 4 cores minimum (parallelization supported)
+- RAM: 16 GB minimum (recommended 24 GB+ for full genomes)
 
-**Workflow Image:** Refer to ![Phasing SV Pipeline](./Pipeline_Diagram.png) in the repo for full visual overview.
+---
 
-### Input Requirements
+## 🛠️ Installation
 
-* BAM must be phased (HP tags assigned)
-* Phased SNP VCF must be available
-* SV VCF must be pre-detected by external tools
+### 1. Clone repository
+```bash
+git clone https://github.com/SFGLab/Team5_Phased_SV_Analysis.git
+cd Team5_Phased_SV_Analysis/SvPhaser
+```
 
-### Step 1: Input Validation and Preparation
+### 2. Install via pip
+```bash
+pip install .
+```
 
-* Ensure BAM has HP tags (`HP:i:1`, `HP:i:2`)
-* Ensure SNP VCF and SV VCF are indexed and correspond to the same genome build
+or for development mode:
+```bash
+pip install -e .
+```
 
-### Step 2: SV Haplotype Assignment (Novel Method)
+---
 
-* Extract reads supporting each SV from the phased BAM
-* Assign SVs to haplotypes using following conditions:
+## 📦 Dependencies
 
-  1. SV-supporting reads must overlap phased SNPs
-  2. Assign SV to haplotype 1 or 2 based on majority of HP-tagged reads
-  3. Apply minimum read support threshold (user-defined)
-  4. If equal number of reads support both haplotypes, assign both or mark as ambiguous
+| Package | Purpose |
+|---------|---------|
+| pysam | BAM file parsing |
+| pandas | VCF/CSV parsing |
+| argparse | CLI parsing (built-in) |
+| glob, multiprocessing, os, collections | Built-in libraries |
 
-### Step 3: Output Generation
+✅ Only `pysam` and `pandas` are external.
 
-* Create phased SV VCF file with GT and PS fields for haplotype annotation
-* Merge phased SNPs and phased SVs using bcftools if required
+---
 
-Example:
+## 🚀 Usage Example
 
 ```bash
-bcftools merge whatshap_phased.vcf.gz HG00733_SVs_phased.vcf -o merged_output.vcf
+svphaser --phased_bam HG00733.sorted_phased.bam \
+         --unphased_vcf HG00733_allsvs_10X.vcf \
+         --output /path/to/output_folder \
+         --min_support 10
 ```
 
-### Step 4: Visualization & Reporting
+**Arguments:**
 
-* Visualize phased SVs in IGV or circos
-* Generate key metrics:
-
-  * Percentage of SVs phased
-  * SV type distribution per haplotype
-  * Concordance with SNP phased blocks
-
----
-
-## 🛠️ View of Output
-
-* Final VCF with phased SVs annotated with `HP`, `GT`, and `PS` fields
-* Summary report file with:
-
-  * Total SVs processed
-  * Phased vs unphased SVs
-  * Ambiguous SVs list
+| Parameter | Description |
+|-----------|-------------|
+| `--phased_bam` | Path to BAM file containing HP tags |
+| `--unphased_vcf` | Path to unphased structural variant VCF |
+| `--output` | Output directory |
+| `--min_support` | Minimum number of supporting reads (default: 10) |
 
 ---
 
-## 🎯 Optional Enhancements
+## 📄 Output Structure
 
-* Machine learning model to resolve ambiguous SV phasing
-* Add support for trio-aware SV phasing using family datasets
-* Integration with Hi-C or Strand-seq data for long-range phasing improvements
-* Scalability improvements for large cohort studies
-
----
-
-## 📆 Future Tasks
-
-* Finalize core `link_sv_to_hp.py` algorithm
-* Integrate quality filtering module for low-confidence SVs
-* Validate pipeline on trio ground-truth datasets
-* Benchmark against existing methods
-* Prepare final dataset + documentation for GitHub release
+```
+output_folder/
+├── chromosome_csvs/ (temporary CSVs - deleted automatically)
+├── merged/
+│   ├── SV_phasing_full.csv
+│   ├── {input_vcf_name}_phased.vcf
+```
 
 ---
 
-## 🛀 BioAI Ubuntu/Linux Setup Script (WSL2 or Native Linux)
+## 📊 Benchmarking
 
+| System | CPU | RAM | Runtime | Dataset Size |
+|--------|-----|-----|---------|--------------|
+| Workstation (Linux) | 32 cores | 256 GB | ~10 minutes | Full human genome (30x) |
+| Laptop (WSL2, i7-9th Gen) | 4 cores | 24 GB | ~45 min - 1 hours | Full human genome (30x) |
+
+✅ Scales linearly with number of CPU cores.  
+✅ Fully memory-safe even on small systems.
+
+---
+
+## 📈 Pipeline Workflow
+
+```
+Input: Phased BAM + Unphased SV VCF
+↓
+Parallel chromosome-wise read extraction
+↓
+Read support evaluation & haplotype assignment
+↓
+Merged CSV creation
+↓
+Phased SV VCF writing
+↓
+Final Output
+```
+
+---
+
+## 💎 Novel Contributions
+
+- Direct haplotype assignment to SVs using phased BAM read evidence
+- Per-SV read support statistics integrated in VCF output
+- Automatic deletion of intermediate files for disk efficiency
+- Lightweight CLI designed for both local and cluster use
+- Ready for integration into large cohort SV analysis pipelines
+
+---
+
+## 📜 License
+
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
+## 📬 Contact
+
+Developed by: Team5 (BioAI Hackathon):Sachin Gadakh, Pranjul Mishra  
+Lead Contact: [pranjul.mishra@proton.me] [s.gadakh@cent.uw.edu.pl]
+
+Feel free to submit issues, feature requests, or contribute via GitHub!
+
+---
+
+# 🚀 Ready to Phase Your SVs?
 ```bash
-#!/bin/bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y build-essential wget curl git unzip python3 python3-pip parallel zlib1g-dev libbz2-dev liblzma-dev \
-    samtools bcftools bedtools minimap2 whatshap htslib bwa seqtk fastqc nano htop screen tmux circos
-
-pip3 install svim
-
-# (Recommended) Install Sniffles2 via conda
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-bash Miniconda3-latest-Linux-x86_64.sh
-```
-
-Add this to `~/.bashrc`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
+pip install svphaser
+svphaser --help
 ```
 
 ---
 
-## 📄 Common WSL/Linux Warnings (FAQ)
+# 🎉 Release Notes (v1.0.0)
 
-These warnings are safe in WSL:
-
-```
-Failed to retrieve available kernel versions.
-Failed to check for processor microcode upgrades.
-```
-
----
-
-## 💎 requirements.txt
-
-```txt
-samtools
-bcftools
-bedtools
-whatshap
-svim
-matplotlib
-scikit-learn
-numpy
-pandas
-pysam
-```
-
+- Initial public release of **SvPhaser**
+- Full parallel chromosome-wise phasing
+- CLI interface with `--min_support` option
+- Integrated VCF writer with read support field
+- Disk-efficient: deletes temporary files after merge
 
 ---
-
-## 📉 Novel Contributions
-
-* First tool to phase SVs using combined phased SNPs + phased BAM read alignments
-* Enables compound heterozygosity detection and allele-specific effect studies
-* Solves critical gap of SV-level phasing using long-read data
-
----
-
