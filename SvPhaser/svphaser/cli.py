@@ -48,24 +48,27 @@ def assign_sv_to_haplotype_by_chromosome(args):
         ]
 
         support_count = len(haps)
-        assigned_hap = "unphased"
+        hp1_count = haps.count(1)
+        hp2_count = haps.count(2)
+        assigned_hap = "unknown"
 
         if support_count >= min_support:
-            hap_counter = Counter(haps)
-            hap_freq = hap_counter.most_common()
+            total = hp1_count + hp2_count
+            if total > 0:
+                hp1_ratio = hp1_count / total
+                hp2_ratio = hp2_count / total
 
-            if len(hap_freq) >= 2 and hap_freq[0][1] == hap_freq[1][1]:
-                assigned_hap = "HP1_HP2"
-            else:
-                if hap_freq[0][0] == 1:
+                if hp1_ratio > 0.7:
                     assigned_hap = "HP1"
-                elif hap_freq[0][0] == 2:
+                elif hp2_ratio > 0.7:
                     assigned_hap = "HP2"
+                else:
+                    assigned_hap = "HP1_HP2"
 
-        results.append([chrom, pos, row["ID"], assigned_hap, support_count])
+        results.append([chrom, pos, row["ID"], assigned_hap, support_count, hp1_count, hp2_count])
 
     os.makedirs(output_folder, exist_ok=True)
-    results_df = pd.DataFrame(results, columns=["CHROM", "POS", "SV_ID", "HAPLOTYPE", "READ_SUPPORT"])
+    results_df = pd.DataFrame(results, columns=["CHROM", "POS", "SV_ID", "HAPLOTYPE", "READ_SUPPORT", "HP1_COUNT", "HP2_COUNT"])
     results_df.to_csv(f"{output_folder}/SV_phasing_{chrom}.csv", index=False)
     print(f"{chrom} done ✅")
 
@@ -96,7 +99,7 @@ def write_phased_vcf(csv_file, vcf_input, vcf_output):
             pos = int(parts[1])
 
             key = (chrom, pos)
-            haplotype, read_support = phasing_dict.get(key, ("unphased", 0))
+            haplotype, read_support = phasing_dict.get(key, ("unknown", 0))
 
             if haplotype == "HP1":
                 gt = "1|0"
@@ -138,15 +141,16 @@ def main():
     phased_vcf = os.path.join(merged_folder, f"{input_name}_phased.vcf")
     write_phased_vcf(merged_csv, args.unphased_vcf, phased_vcf)
 
-    # Delete temporary chromosome CSVs
     import glob
     csv_files = glob.glob(os.path.join(chrom_folder, "SV_phasing_chr*.csv"))
     for file in csv_files:
         os.remove(file)
     print("Temporary chromosome CSVs deleted ✅")
-
     print("SvPhaser complete ✅")
 
 
 if __name__ == "__main__":
     main()
+
+
+
