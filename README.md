@@ -1,215 +1,159 @@
 # SvPhaser
 
-[![PyPI version](https://badge.fury.io/py/svphaser.svg)](https://badge.fury.io/py/svphaser)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+> **Haplotype‑aware structural‑variant genotyper for long‑read data**
 
-Structural Variant Phasing Tool for Long-reads based Phased BAM - Developed by Team5 (BioAI Hackathon)
-
----
-
-## 🧬 Overview
-
-**SvPhaser** is a lightweight, fast, and scalable tool for **phasing structural variants (SVs)** in human genomes by leveraging:
-- **Phased aligned BAM files** (containing HP tags)
-- **Unphased structural variant VCF files**
-
-Unlike traditional SV callers, **SvPhaser does not call new SVs** — it assigns haplotypes to **existing SVs** based on read evidence.
+[![PyPI version](https://img.shields.io/pypi/v/svphaser.svg?logo=pypi)](https://pypi.org/project/svphaser)
+[![Tests](https://img.shields.io/github/actions/workflow/status/your‑org/SvPhaser/ci.yml?label=ci)](https://github.com/your‑org/SvPhaser/actions)
+[![License](https://img.shields.io/github/license/your‑org/SvPhaser.svg)](LICENSE)
 
 ---
 
-## 📈 Pipeline Workflow
+`SvPhaser` phases **pre‑called structural variants (SVs)** using *HP‑tagged* long‑read alignments (PacBio HiFi, ONT Q20+, …).  Think of it as *WhatsHap* for insertions/deletions/duplications: we do **not** discover SVs; we assign each variant a haplotype genotype (`0|1`, `1|0`, `1|1`, or `./.`) together with a **Genotype Quality (GQ)** score – all in a single, embarrassingly‑parallel pass over the genome.
 
-![Phasing SV Pipeline](Output/Pipeline_Diagram.png)
+## Key highlights
 
-```
-Input: Phased BAM + Unphased SV VCF
-↓
-Parallel chromosome-wise read extraction
-↓
-Read support evaluation & haplotype assignment
-↓
-Merged CSV creation
-↓
-Phased SV VCF writing
-↓
-Final Output
-```
-## 📝 Our Approach
-
-- Designed to assign haplotypes to pre-detected structural variants (SVs) using phased long-read BAM alignments.
-- Extracts HP-tagged reads overlapping SV regions.
-- Assigns SVs to haplotype 1 or 2 by majority of supporting reads.
-- Marks SV as HP1_HP2 (CSV) / 1|1 (VCF) when equal support exists.
-- Marks SV as unphased (unphased / ./. in VCF) if below read support threshold.
-- Runs efficiently in parallel on chromosome-split datasets.
-- Outputs per-chromosome CSVs, a merged CSV, and final phased VCF file.
+* **Fast, per‑chromosome multiprocessing** – linear scale‑out on 32‑core workstations.
+* **Deterministic Δ‑based decision tree** – no MCMC or hidden state machines.
+* **Friendly CLI** (`svphaser phase …`) and importable Python API.
+* **Seamless VCF injection** – adds `HP_GT`, `HP_GQ`, `HP_GQBIN` INFO tags while copying the original header verbatim.
+* **Configurable confidence bins** and publication‑ready plots (see `result_images/`).
 
 ---
 
-## 🚀 Key Features
-
-- Parallel chromosome-wise SV phasing
-- Flexible minimum read support threshold
-- Outputs phased SV VCF with GT and DP fields
-- Fast processing with low memory usage
-- Pip-installable + easy CLI interface
-
----
-
-## ⚙️ System Requirements
-
-- OS: Linux / WSL2 (Ubuntu 22.04 recommended)
-- Python: >= 3.6
-- CPU: 4 cores minimum (parallelization supported)
-- RAM: 16 GB minimum (recommended 24 GB+ for full genomes)
-
----
-
-## 🛠️ Installation
-
-### 1. Clone repository
-```bash
-git clone https://github.com/SFGLab/SvPhaser.git
-cd SvPhaser/SvPhaser
-```
-
-### 2. Install via pip
-```bash
-pip install .
-```
-
-or for development mode:
-```bash
-pip install -e .
-```
-
----
-
-## 📦 Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| pysam | BAM file parsing |
-| pandas | VCF/CSV parsing |
-| argparse | CLI parsing (built-in) |
-| glob, multiprocessing, os, collections | Built-in libraries |
-
-✅ Only `pysam` and `pandas` are external.
-
----
-
-## 🚀 Usage Example
+## Installation
 
 ```bash
-svphaser --phased_bam HG00733.sorted_phased.bam \
-         --unphased_vcf HG00733_allsvs_10X.vcf \
-         --output /path/to/output_folder \
-         --min_support 10
+# Requires Python ≥3.9
+pip install svphaser            # PyPI (coming soon)
+# or
+pip install git+https://github.com/your‑org/SvPhaser.git@v0.2.0
 ```
 
-**Arguments:**
+`cyvcf2`, `pysam`, `typer[all]`, and `pandas` are pulled in automatically.
 
-| Parameter | Description |
-|-----------|-------------|
-| `--phased_bam` | Path to BAM file containing HP tags |
-| `--unphased_vcf` | Path to unphased structural variant VCF |
-| `--output` | Output directory |
-| `--min_support` | Minimum number of supporting reads (default: 10) |
+## Quick‑start
 
----
-
-## 📄 Output Structure
-
-```
-output_folder/
-├── chromosome_csvs/ (temporary CSVs - deleted automatically)
-├── merged/
-│   ├── SV_phasing_full.csv
-│   ├── {input_vcf_name}_phased.vcf
+```bash
+svphaser phase \
+    sample_unphased.vcf.gz \
+    sample.sorted_phased.bam \
+    --out-dir results/ \
+    --min-support 10 \
+    --major-delta 0.70 \
+    --equal-delta 0.25 \
+    --gq-bins "30:High,10:Moderate" \
+    --threads 32
 ```
 
+Outputs (written inside **`results/`**)
 
-## 📊 Results of Our Analysis
+```
+sample_unphased_phased.vcf   # original VCF + HP_* INFO fields
+sample_unphased_phased.csv   # tidy table for plotting / downstream R
+```
 
-### 1️⃣ Overlap of Phased SV Sets
+See [`docs/methodology.md`](docs/methodology.md) and the flow‑chart below for algorithmic details.
 
-This pie chart summarizes overlap between diploid-phased SVs and alignment-based phased SVs using a 1bp overlap threshold.
+![SvPhaser methodology](result_images/methodology_diagram.png)
 
-![Overlap of Phased SV Sets](Output/graphs/overlap_phased_sv_sets_piechart.png)
+## Folder layout
 
-### 2️⃣ IGV Validation of Phased SV
+```
+SvPhaser/
+├─ src/svphaser/        # importable package
+│  ├─ cli.py            # Typer entry‑point
+│  ├─ logging.py        # unified log setup
+│  └─ phasing/
+│     ├─ algorithms.py  # core maths
+│     ├─ io.py          # driver & I/O
+│     ├─ _workers.py    # per‑chrom processes
+│     └─ types.py       # thin dataclasses
+├─ tests/               # pytest suite + mini data
+├─ docs/                # extra documentation
+├─ result_images/       # generated plots & diagrams
+└─ CHANGELOG.md
+```
 
-An example IGV screenshot showing an unphased SV (original), the same SV successfully phased by SvPhaser, and confirmation in the diploid assembly.
+## Python usage
 
-![IGV Validation of Phased SV](Output/graphs/igv_phased_sv_validation_chr16.png)
+```python
+from pathlib import Path
+from svphaser.phasing.io import phase_vcf
 
-### 3️⃣ Haplotype Assignment Distribution
+phase_vcf(
+    Path("sample.vcf.gz"),
+    Path("sample.bam"),
+    out_dir=Path("results"),
+    min_support=10,
+    major_delta=0.70,
+    equal_delta=0.25,
+    gq_bins="30:High,10:Moderate",
+    threads=8,
+)
+```
 
-Bar plot showing SV assignment frequencies by haplotype with min_support=10. Majority of SVs are confidently assigned to HP1 or HP2.
-
-![SV Phasing Results](Output/graphs/sv_phasing_results_min_support_10_barplot.png)
-
-![Distribution Description](Output/graphs/Distribution_Description.png) 
-
-
-### How will VCF Phased Output look like ? 
-We made some ammenmends and made the vcf file more informative which is compatible with IGV so no error with the changes 
-![Phased VCF Output File](Output/graphs/Vcf_output_phased.png) 
- 
----
-
-## 📊 Benchmarking
-
-| System | CPU | RAM | Runtime | Dataset Size |
-|--------|-----|-----|---------|--------------|
-| Workstation (Linux) | 14 cores | 256 GB | ~30 minutes | Full human genome (30x) |
-| Laptop (WSL2, i7-9th Gen) | 6 cores | 24 GB | ~1hours | Full human genome (30x) |
-
-✅ Scales linearly with number of CPU cores.  
-✅ Fully memory-safe even on small systems.
-
----
+The resulting `DataFrame` can be loaded from the CSV for custom analytics.
 
 
-## 💎 Novel Contributions
 
-- Direct haplotype assignment to SVs using phased BAM read evidence
-- Per-SV read support statistics integrated in VCF output
-- Automatic deletion of intermediate files for disk efficiency
-- Lightweight CLI designed for both local and cluster use
-- Ready for integration into large cohort SV analysis pipelines
 
----
+## Development & contributing
 
-## 📜 License
+1. Clone and create a virtual env:
 
-This project is licensed under the [MIT License](LICENSE).
+   ```bash
+   git clone https://github.com/your‑org/SvPhaser.git && cd SvPhaser
+   python -m venv .venv && source .venv/bin/activate
+   pip install -e .[dev]
+   ```
+2. Run the test‑suite & type checks:
 
----
+   ```bash
+   pytest -q
+   mypy src/svphaser
+   black --check src tests
+   ```
+3. Send a PR targeting the **`dev`** branch; one topic per PR.
+
+Please read `CONTRIBUTING.md` (to come) for style‑guides and the DCO sign‑off.
+
+## Citing SvPhaser
+
+If SvPhaser contributed to your research, please cite:
+
+```bibtex
+@software{svphaser2024,
+  author       = {Pranjul Mishra, Sachin Ghadak,Zelazny Lab},
+  title        = {SvPhaser: haplotype‑aware SV genotyping},
+  version      = {0.2.0},
+  date         = {2024-06-18},
+  url          = {https://github.com/your‑org/SvPhaser}
+}
+```
+
+
+
+
+## License
+`SvPhaser` is released under the MIT License – see [`LICENSE`](LICENSE).
+
+
+
+
 
 ## 📬 Contact
 
-Developed by: Team5 (BioAI Hackathon): Sachin Gadakh, Pranjul Mishra  
-Lead Contacts: [pranjul.mishra@proton.me], [s.gadakh@cent.uw.edu.pl]  
+Developed by **Team5** (*BioAI Hackathon*) – Sachin Gadakh & Pranjul Mishra.
 
-Feel free to submit issues, feature requests, or contribute via GitHub!
+Lead contacts:
+• [pranjul.mishra@proton.me](mailto:pranjul.mishra@proton.me)
+• [s.gadakh@cent.uw.edu.pl](mailto:s.gadakh@cent.uw.edu.pl)
 
----
-
-# 🚀 Ready to Phase Your SVs?
-```bash
-pip install svphaser
-svphaser --help
-```
+Feedback, feature requests and bug reports are all appreciated — feel free to open a GitHub issue or reach out by e‑mail.
 
 ---
 
-# 🎉 Release Notes (v1.0.0)
+*Happy phasing!*
 
-- Initial public release of **SvPhaser**
-- Full parallel chromosome-wise phasing
-- CLI interface with `--min_support` option
-- Integrated VCF writer with read support field
-- Disk-efficient: deletes temporary files after merge
 
----
+

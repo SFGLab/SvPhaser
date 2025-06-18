@@ -1,0 +1,49 @@
+# -------------------------------------------------------------------
+#  SvPhaser • single-source-of-truth project metadata  (PEP-621)
+# -------------------------------------------------------------------
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "svphaser"
+version = "0.0.1"              # bump via tag or hatchling-version later
+description = "Structural-variant phasing from HP-tagged long-read BAMs"
+authors = [{ name = "Your Name", email = "you@lab.org" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+  "pysam>=0.23",
+  "cyvcf2>=0.30",
+  "typer>=0.14",
+  "pandas>=2.1",
+  # matplotlib is optional; loaded only by plots.py
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.4",
+  "mypy>=1.10",
+  "black>=24.4",
+  "pre-commit>=3.7",
+]
+
+[project.scripts]              # makes `svphaser …` available after install
+svphaser = "svphaser.cli:app"
+
+# -------------------------------------------------------------------
+#  Tooling (ruff / black / mypy) – keeps VS Code happy out-of-the-box
+# -------------------------------------------------------------------
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
