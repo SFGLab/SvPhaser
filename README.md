@@ -123,7 +123,7 @@ If SvPhaser contributed to your research, please cite:
 
 ```bibtex
 @software{svphaser2024,
-  author       = {Pranjul Mishra, Sachin Ghadak,Zelazny Lab},
+  author       = {Pranjul Mishra, Sachin Ghadak, CeNT Lab},
   title        = {SvPhaser: haplotype‑aware SV genotyping},
   version      = {0.2.0},
   date         = {2024-06-18},
