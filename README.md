@@ -52,7 +52,7 @@ sample_unphased_phased.vcf   # original VCF + HP_* INFO fields
 sample_unphased_phased.csv   # tidy table for plotting / downstream R
 ```
 
-See [`docs/methodology.md`](docs/methodology.md) and the flow‑chart below for algorithmic details.
+See [`docs/methodology.md`](docs/Methodology.md) and the flow‑chart below for algorithmic details.
 
 ![SvPhaser methodology](result_images/methodology_diagram.png)
 
