@@ -66,13 +66,13 @@ Key decision thresholds are exposed as CLI flags and recorded in the VCF header 
 
 ### 3.2 Depth/imbalance heat‑map
 
-![Depth vs Δ heat‑map](docs/result_images/heatmap_imbalance_vs_depth_with_GQ_contours(HG00733).png)
+![Depth vs Δ heat‑map](result_images/heatmap_imbalance_vs_depth_with_GQ_contours(HG00733).png)
 
 *Figure 3 – Heat map of mean GQ across the 2‑D grid of total depth (y, log₁₀) vs imbalance Δ (x).  The diagonal band of high GQ highlights the strong‑majority regime.*
 
 ### 3.3 GQ distribution by SVTYPE
 
-![GQ violin](docs/result_images/violin_plot_GQ_by_SVTYPE(HG00733).png)
+![GQ violin](result_images/violin_plot_GQ_by_SVTYPE(HG00733).png)
 
 *Figure 4 – Violin plots confirm that duplications (DUP) and deletions (DEL) occupy slightly higher accuracy regimes compared with insertions (INS) under identical thresholds.*
 
