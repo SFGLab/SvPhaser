@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pandas as pd
-from cyvcf2 import Reader  # only used in the parent for header/seqnames
+from cyvcf2 import Reader
 
 from ._workers import _phase_chrom_worker
 from .types import GQBin, SVKey, WorkerOpts
@@ -27,9 +27,6 @@ __all__ = ["phase_vcf"]
 logger = logging.getLogger("svphaser.io")
 
 
-# ────────────────────────────────────────────────────────────────────────
-#  Public entry-point
-# ────────────────────────────────────────────────────────────────────────
 def phase_vcf(
     sv_vcf: Path,
     bam: Path,
@@ -52,7 +49,6 @@ def phase_vcf(
         for part in gq_bins.split(","):
             thr_s, lbl = part.strip().split(":")
             bins.append((int(thr_s), lbl))
-        # make sure highest threshold comes first so “first match wins”
         bins.sort(key=lambda x: x[0], reverse=True)
 
     # 2 ─ Build immutable options holder for workers
@@ -79,7 +75,6 @@ def phase_vcf(
     dataframes: List[pd.DataFrame] = []
     ctx = mp.get_context("fork")
     with ctx.Pool(processes=threads) as pool:
-        # starmap expands each tuple into positional args
         for df in pool.starmap(_phase_chrom_worker, worker_args, chunksize=1):
             dataframes.append(df)
             chrom = df.iloc[0]["chrom"] if not df.empty else "?"
@@ -105,46 +100,82 @@ def phase_vcf(
     logger.info("VCF → %s", out_vcf)
 
 
-# ────────────────────────────────────────────────────────────────────────
-#  Helper – copy input VCF, injecting SvPhaser INFO fields
-# ────────────────────────────────────────────────────────────────────────
-from cyvcf2 import Reader, Writer, Variant   # ← Writer added
-
 def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
-    """Copy *in_vcf* → *out_vcf* while adding HP_GT / HP_GQ / HP_GQBIN INFO."""
+    """
+    Write a phased VCF using the merged DataFrame, reconstructing INFO and all columns.
+    """
+    import pandas as pd
+    from cyvcf2 import Reader
 
-    key2call: Dict[SVKey, Tuple[str, int, str | None]] = {
-        (str(r.chrom), int(r.pos), str(r.id)): ( #type: ignore[assignment]
-            str(r.gt),
-            int(r.gq), #type: ignore[assignment]
-            getattr(r, "gq_label", None),   # safe even if column absent
-        )
-        for r in df.itertuples()
-    }
+    input_vcf = Reader(str(in_vcf))
 
-    rdr = Reader(str(in_vcf))
-
-    def _ensure(iid: str, desc: str, typ: str) -> None:
-        if f"ID={iid}," not in rdr.raw_header:
-            rdr.add_info_to_header(dict(ID=iid, Description=desc, Type=typ, Number=1))
-
-    _ensure("HP_GT", "Haplotype genotype (0|1,1|0,1|1,./.) from SvPhaser", "String")
-    _ensure("HP_GQ", "Phred-scaled genotype quality (0–99) from SvPhaser", "Integer")
-    if "gq_label" in df.columns:
-        _ensure("HP_GQBIN", "Confidence bin label from SvPhaser", "String")
-
-    # Portable header cloning (works on all cyvcf2 versions)
-    wtr = Writer(str(out_vcf), rdr)
-
-    for rec in rdr:                       
+    # Build info lookup: key = (CHROM, POS, ID) for fast ref/alt/qual/FILTER/INFO lookup
+    vcf_info_lookup = {}
+    for rec in input_vcf:
         key = (rec.CHROM, rec.POS, rec.ID or ".")
-        if key in key2call:
-            gt, gq, lbl = key2call[key]
-            rec.INFO["HP_GT"] = gt
-            rec.INFO["HP_GQ"] = gq
-            if lbl is not None:
-                rec.INFO["HP_GQBIN"] = lbl
-        wtr.write_record(rec)
+        # Gather all INFO as key=value
+        info_dict = {}
+        for k in rec.INFO:
+            info_key = k[0] if isinstance(k, tuple) else k
+            v = rec.INFO.get(info_key)
+            if v is not None:
+                info_dict[info_key] = v
+        vcf_info_lookup[key] = {
+            'REF': rec.REF,
+            'ALT': rec.ALT[0] if rec.ALT else "<N>",
+            'QUAL': rec.QUAL if rec.QUAL is not None else '.',
+            'FILTER': rec.FILTER if rec.FILTER else 'PASS',
+            'INFO': info_dict,
+        }
+    input_vcf = Reader(str(in_vcf))  # Re-open to get header from the start
 
-    wtr.close()
-    rdr.close()
+    # Write header and records
+    with open(out_vcf, "w") as out:
+        # Write VCF header
+        for line in input_vcf.raw_header.strip().splitlines():
+            out.write(line + "\n")
+        # Figure out sample name
+        sample_name = input_vcf.samples[0] if input_vcf.samples else "SAMPLE"
+        # Write column header
+        out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
+
+        # Sort df if needed for VCF spec (optional: df.sort_values(["chrom","pos"]))
+        for row in df.itertuples(index=False):
+            # Flexible: handle missing id, gq_label, etc.
+            chrom = getattr(row, "chrom", ".")
+            pos = int(getattr(row, "pos", 0))
+            id = getattr(row, "id", ".")
+            gt = getattr(row, "gt", "./.")
+            gq = getattr(row, "gq", "0")
+            svtype = getattr(row, "svtype", None)
+            gq_label = getattr(row, "gq_label", None)
+
+            # Find matching INFO from original VCF
+            key = (str(chrom), pos, str(id))
+            info = vcf_info_lookup.get(key)
+            if info is None:
+                # Try pos-1 for 0-based vs 1-based slip
+                key_alt = (str(chrom), pos - 1, str(id))
+                info = vcf_info_lookup.get(key_alt)
+            if info is None:
+                logger.warning(f"Could not find VCF info for {chrom}:{pos} {id}")
+                continue
+
+            ref = info['REF']
+            alt = info['ALT']
+            qual = info['QUAL']
+            filt = info['FILTER']
+
+            # Compose INFO: always put SVTYPE first
+            orig_info = [f"{k}={v}" for k, v in info['INFO'].items() if k != "SVTYPE"]
+            if svtype:
+                orig_info.insert(0, f"SVTYPE={svtype}")
+            if gq_label and pd.notnull(gq_label):
+                orig_info.append(f"GQBIN={gq_label}")
+            info_str = ";".join(orig_info) if orig_info else "."
+
+            format_str = "GT:GQ"
+            sample_str = f"{gt}:{gq}"
+
+            vcf_line = f"{chrom}\t{pos}\t{id}\t{ref}\t{alt}\t{qual}\t{filt}\t{info_str}\t{format_str}\t{sample_str}\n"
+            out.write(vcf_line)
