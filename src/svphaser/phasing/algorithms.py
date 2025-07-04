@@ -65,19 +65,21 @@ def classify_haplotype(
     major_delta: float = 0.70,
     equal_delta: float = 0.20,
 ) -> Tuple[str, int]:
-    """Return (GT, GQ) according to Δ/N rule with overflow‑safe GQ."""
-
     total = n1 + n2
     if total < min_support:
         return "./.", 0
 
-    delta_rel = abs(n1 - n2) / total
     gq = phasing_gq(n1, n2)
+    n1_ratio = n1 / total
+    n2_ratio = n2 / total
 
-    if delta_rel > major_delta:
-        gt = "0|1" if n1 > n2 else "1|0"
-    elif delta_rel <= equal_delta:
+    if n1_ratio >= major_delta:
+        gt = "1|0"
+    elif n2_ratio >= major_delta:
+        gt = "0|1"
+    elif abs(n1 - n2) / total <= equal_delta:
         gt = "1|1"
     else:
         gt = "./."
     return gt, gq
+
