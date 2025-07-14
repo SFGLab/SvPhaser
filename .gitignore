@@ -2,6 +2,8 @@
 output_*/           # Ignore any folder starting with output_
 output/             # Ignore a generic output directory
 
+__pycache__/
+
 # Ignore all CSV and VCF files anywhere (optional, only if you want)
 *.csv
 *.vcf

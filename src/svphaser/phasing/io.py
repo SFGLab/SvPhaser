@@ -179,3 +179,7 @@ def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
 
             vcf_line = f"{chrom}\t{pos}\t{id}\t{ref}\t{alt}\t{qual}\t{filt}\t{info_str}\t{format_str}\t{sample_str}\n"
             out.write(vcf_line)
+
+
+
+
