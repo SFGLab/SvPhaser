@@ -66,7 +66,7 @@ def classify_haplotype(
     equal_delta: float = 0.20,
 ) -> Tuple[str, int]:
     total = n1 + n2
-    if total < min_support:
+    if n1 < min_support and n2 < min_support:
         return "./.", 0
 
     gq = phasing_gq(n1, n2)

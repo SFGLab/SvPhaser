@@ -83,10 +83,20 @@ def phase_vcf(
     # 5 ─ Merge & apply *global* depth filter
     merged = pd.concat(dataframes, ignore_index=True)
     pre = len(merged)
-    keep = (merged["n1"] >= min_support) | (merged["n2"] >= min_support)
+    keep = ~((merged["n1"] < min_support) & (merged["n2"] < min_support))
+
+    # --- Save dropped SVs here ---
+    dropped_svs = merged[~keep]
+    stem = sv_vcf.name.removesuffix(".vcf.gz").removesuffix(".vcf")
+    dropped_csv = out_dir / f"{stem}_dropped_svs.csv"
+    dropped_svs.to_csv(dropped_csv, index=False)
+    logger.info("Dropped SVs saved to %s (%d SVs)", dropped_csv, len(dropped_svs))
+    # ----------------------------
+
     merged = merged[keep].reset_index(drop=True)
     if (dropped := pre - len(merged)):
         logger.info("Depth filter removed %d SVs", dropped)
+
 
     # 6 ─ Write CSV
     stem = sv_vcf.name.removesuffix(".vcf.gz").removesuffix(".vcf")
