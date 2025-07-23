@@ -113,18 +113,18 @@ def phase_vcf(
 def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
     """
     Write a phased VCF using the merged DataFrame, reconstructing INFO and all columns,
-    tab-delimited, compliant with VCF tools.
+    tab-delimited, fully VCF4.2 compliant.
     """
     import pandas as pd
     from cyvcf2 import Reader
+    import numpy as np
 
     input_vcf = Reader(str(in_vcf))
 
-    # Build info lookup: key = (CHROM, POS, ID) for fast ref/alt/qual/FILTER/INFO lookup
+    # Build info lookup: key = (CHROM, POS, ID)
     vcf_info_lookup = {}
     for rec in input_vcf:
         key = (rec.CHROM, rec.POS, rec.ID or ".")
-        # Gather all INFO as key=value
         info_dict = {}
         for k in rec.INFO:
             info_key = k[0] if isinstance(k, tuple) else k
@@ -138,22 +138,22 @@ def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
             'FILTER': rec.FILTER if rec.FILTER else 'PASS',
             'INFO': info_dict,
         }
-    input_vcf = Reader(str(in_vcf))  # Re-open to get header from the start
+    input_vcf = Reader(str(in_vcf))  # For header
 
     with open(out_vcf, "w") as out:
-        # Write header
+        # Header: preserve tabs
         for line in input_vcf.raw_header.strip().splitlines():
-            out.write(line.rstrip() + "\n")
+            out.write(line.rstrip('\r\n') + "\n")
         sample_name = input_vcf.samples[0] if input_vcf.samples else "SAMPLE"
-        # Write column header
         out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
 
         for row in df.itertuples(index=False):
-            chrom = getattr(row, "chrom", ".")
+            chrom = str(getattr(row, "chrom", ".")).strip()
             pos = int(getattr(row, "pos", 0))
-            id = getattr(row, "id", ".")
-            gt = getattr(row, "gt", "./.")
+            id = str(getattr(row, "id", ".")).strip()
+            gt = str(getattr(row, "gt", "./.")).strip()
             gq = getattr(row, "gq", "0")
+            gq = "." if (gq is None or (isinstance(gq, float) and np.isnan(gq))) else str(int(gq))
             svtype = getattr(row, "svtype", None)
             gq_label = getattr(row, "gq_label", None)
 
@@ -166,12 +166,14 @@ def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
                 logger.warning(f"Could not find VCF info for {chrom}:{pos} {id}")
                 continue
 
-            ref = info['REF']
-            alt = info['ALT']
+            ref = str(info['REF']).strip() if info['REF'] else "N"
+            alt = str(info['ALT']).strip() if info['ALT'] else "<N>"
             qual = info['QUAL']
-            filt = info['FILTER']
+            if qual is None or (isinstance(qual, float) and np.isnan(qual)):
+                qual = "."
+            filt = str(info['FILTER']).strip() if info['FILTER'] else "PASS"
 
-            # Compose INFO: always put SVTYPE first
+            # Compose INFO field, always SVTYPE first
             orig_info = [f"{k}={v}" for k, v in info['INFO'].items() if k != "SVTYPE"]
             if svtype:
                 orig_info.insert(0, f"SVTYPE={svtype}")
@@ -182,9 +184,9 @@ def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
             format_str = "GT:GQ"
             sample_str = f"{gt}:{gq}"
 
-            # ENFORCE TAB-SEPARATION!
+            # Always 10 columns, always tab-separated
             fields = [
-                str(chrom), str(pos), str(id), str(ref), str(alt),
-                str(qual), str(filt), info_str, format_str, sample_str
+                chrom, str(pos), id, ref, alt,
+                str(qual), filt, info_str, format_str, sample_str
             ]
             out.write('\t'.join(fields) + '\n')
