@@ -112,7 +112,8 @@ def phase_vcf(
 
 def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
     """
-    Write a phased VCF using the merged DataFrame, reconstructing INFO and all columns.
+    Write a phased VCF using the merged DataFrame, reconstructing INFO and all columns,
+    tab-delimited, compliant with VCF tools.
     """
     import pandas as pd
     from cyvcf2 import Reader
@@ -139,19 +140,15 @@ def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
         }
     input_vcf = Reader(str(in_vcf))  # Re-open to get header from the start
 
-    # Write header and records
     with open(out_vcf, "w") as out:
-        # Write VCF header
+        # Write header
         for line in input_vcf.raw_header.strip().splitlines():
-            out.write(line + "\n")
-        # Figure out sample name
+            out.write(line.rstrip() + "\n")
         sample_name = input_vcf.samples[0] if input_vcf.samples else "SAMPLE"
         # Write column header
         out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
 
-        # Sort df if needed for VCF spec (optional: df.sort_values(["chrom","pos"]))
         for row in df.itertuples(index=False):
-            # Flexible: handle missing id, gq_label, etc.
             chrom = getattr(row, "chrom", ".")
             pos = int(getattr(row, "pos", 0))
             id = getattr(row, "id", ".")
@@ -160,11 +157,9 @@ def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
             svtype = getattr(row, "svtype", None)
             gq_label = getattr(row, "gq_label", None)
 
-            # Find matching INFO from original VCF
             key = (str(chrom), pos, str(id))
             info = vcf_info_lookup.get(key)
             if info is None:
-                # Try pos-1 for 0-based vs 1-based slip
                 key_alt = (str(chrom), pos - 1, str(id))
                 info = vcf_info_lookup.get(key_alt)
             if info is None:
@@ -187,9 +182,9 @@ def _write_phased_vcf(out_vcf: Path, in_vcf: Path, df: pd.DataFrame) -> None:
             format_str = "GT:GQ"
             sample_str = f"{gt}:{gq}"
 
-            vcf_line = f"{chrom}\t{pos}\t{id}\t{ref}\t{alt}\t{qual}\t{filt}\t{info_str}\t{format_str}\t{sample_str}\n"
-            out.write(vcf_line)
-
-
-
-
+            # ENFORCE TAB-SEPARATION!
+            fields = [
+                str(chrom), str(pos), str(id), str(ref), str(alt),
+                str(qual), str(filt), info_str, format_str, sample_str
+            ]
+            out.write('\t'.join(fields) + '\n')
