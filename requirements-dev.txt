@@ -1,0 +1,26 @@
+# requirements-dev.txt
+
+# (optional) include runtime requirements
+-r requirements.txt
+
+# Testing
+pytest>=8.0
+pytest-cov>=5.0
+pytest-xdist>=3.5
+hypothesis>=6.90
+
+# Linting / formatting / types
+ruff>=0.5.0
+black>=24.3.0
+mypy>=1.8
+pandas-stubs>=2.0
+
+# Pre-commit hooks
+pre-commit>=3.6
+
+# Build & release
+build>=1.2
+twine>=5.0
+
+# (optional) task runner
+tox>=4.10

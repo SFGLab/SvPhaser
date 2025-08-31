@@ -15,8 +15,8 @@ Key decision thresholds are exposed as CLI flags and recorded in the VCF header 
 | Parameter             | CLI flag        | Default               | Role                                                                                       |              |       |
 | --------------------- | --------------- | --------------------- | ------------------------------------------------------------------------------------------ | ------------ | ----- |
 | **Minimum support**   | `--min-support` | `10`                  | Require at least this many HP‑tagged reads on *either* haplotype for an SV to be retained. |              |       |
-| **Major‑haplotype Δ** | `--major-delta` | `0.70`                | If one haplotype gathers ≥ 70 % of reads ➜ call \*1                                        |  0\* or \*0  |  1\*. |
-| **Equal‑haplotype Δ** | `--equal-delta` | `0.25`                | If the imbalance is ≤ 25 % ➜ call \*1                                                      |  1\*.        |       |
+| **Major‑haplotype Δ** | `--major-delta` | `0.60`                | If one haplotype gathers ≥ 60 % of reads ➜ call \*1                                        |  0\* or \*0  |  1\*. |
+| **Equal‑haplotype Δ** | `--equal-delta` | `0.10`                | If the imbalance is ≤ 10 % ➜ call \*1                                                      |  1\*.        |       |
 | **GQ bins**           | `--gq-bins`     | `30:High,10:Moderate` | Discrete labels added to `INFO/HP_GQBIN` for easier downstream filtering.                  |              |       |
 
 ---
@@ -105,4 +105,4 @@ The strong prevalence of *INS* among unresolved (`./.`) genotypes suggests that 
 
 ---
 
-*Last updated: {{TODAY}}*
+*Last updated: {30-08-2025}*
