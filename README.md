@@ -1,22 +1,23 @@
 # SvPhaser
 
-> **Haplotype‑aware structural‑variant genotyper for long‑read data**
+> **Haplotype‑aware structural‑variant phasing for long‑read data**
 
 [![PyPI version](https://img.shields.io/pypi/v/svphaser.svg?logo=pypi)](https://pypi.org/project/svphaser)
-[![Tests](https://img.shields.io/github/actions/workflow/status/your‑org/SvPhaser/ci.yml?label=ci)](https://github.com/your‑org/SvPhaser/actions)
-[![License](https://img.shields.io/github/license/your‑org/SvPhaser.svg)](LICENSE)
+[![Tests](https://img.shields.io/github/actions/workflow/status/your-org/SvPhaser/ci.yml?label=ci)](https://github.com/your-org/SvPhaser/actions)
+[![License](https://img.shields.io/github/license/your-org/SvPhaser.svg)](LICENSE)
 
 ---
 
-`SvPhaser` phases **pre‑called structural variants (SVs)** using *HP‑tagged* long‑read alignments (PacBio HiFi, ONT Q20+, …).  Think of it as *WhatsHap* for insertions/deletions/duplications: we do **not** discover SVs; we assign each variant a haplotype genotype (`0|1`, `1|0`, `1|1`, or `./.`) together with a **Genotype Quality (GQ)** score – all in a single, embarrassingly‑parallel pass over the genome.
+`SvPhaser` assigns **haplotype genotypes** to *pre‑called structural variants (SVs)* using *HP‑tagged* long‑read alignments (ONT, PacBio). Think of it as *WhatsHap‑style phasing* for DEL/INS/INV/…: we don’t discover SVs; we **phase** them — outputting `1|0`, `0|1`, `1|1`, or `./.` plus a **Genotype Quality (GQ)**.
 
-## Key highlights
+## Highlights
 
-* **Fast, per‑chromosome multiprocessing** – linear scale‑out on 32‑core workstations.
-* **Deterministic Δ‑based decision tree** – no MCMC or hidden state machines.
-* **Friendly CLI** (`svphaser phase …`) and importable Python API.
-* **Seamless VCF injection** – adds `HP_GT`, `HP_GQ`, `HP_GQBIN` INFO tags while copying the original header verbatim.
-* **Configurable confidence bins** and publication‑ready plots (see `result_images/`).
+* **Fast, per‑chromosome multiprocessing** with linear scale‑out.
+* **Deterministic decision tree** with clear thresholds (`major_delta`, `equal_delta`).
+* **Overflow‑safe GQ** (exact binomial for shallow depth; normal approx for deep coverage; **capped at 99**).
+* **Standards‑friendly VCF**: preserves your original header/INFO; writes `GT:GQ` in **FORMAT** and optional `GQBIN` in **INFO**; emits clean, tab‑delimited records.
+* **Transparent QC**: CSV summary, optional GQ bin labels, and a `_dropped_svs.csv` audit file.
+* **Simple CLI & Python API** with sane defaults.
 
 ---
 
@@ -24,60 +25,77 @@
 
 ```bash
 # Requires Python ≥3.9
-pip install svphaser            # PyPI (coming soon)
-# or
-pip install git+https://github.com/your‑org/SvPhaser.git@v0.2.0
+pip install svphaser              # from PyPI
+# or a specific tag from source
+pip install "git+https://github.com/your-org/SvPhaser.git@v2.0.1"
 ```
 
-`cyvcf2`, `pysam`, `typer[all]`, and `pandas` are pulled in automatically.
+Runtime deps (`cyvcf2`, `pysam`, `pandas`, `typer`) are installed automatically.
 
-## Quick‑start
+---
+
+## Quick start (CLI)
 
 ```bash
 svphaser phase \
-    sample_unphased.vcf.gz \
-    sample.sorted_phased.bam \
-    --out-dir results/ \
-    --min-support 10 \
-    --major-delta 0.70 \
-    --equal-delta 0.25 \
-    --gq-bins "30:High,10:Moderate" \
-    --threads 32
+  sample_unphased.vcf.gz \
+  sample.sorted_phased.bam \
+  --out-dir results/ \
+  --min-support 10 \
+  --major-delta 0.70 \
+  --equal-delta 0.25 \
+  --gq-bins "30:High,10:Moderate" \
+  --threads 32
 ```
 
-Outputs (written inside **`results/`**)
+Outputs written to **`results/`**:
 
 ```
-sample_unphased_phased.vcf   # original VCF + HP_* INFO fields
-sample_unphased_phased.csv   # tidy table for plotting / downstream R
+sample_unphased_phased.vcf        # original VCF + GT:GQ (FORMAT) and optional GQBIN (INFO)
+sample_unphased_phased.csv        # tidy table: chrom,pos,id,svtype,n1,n2,gt,gq,gq_label
+sample_unphased_dropped_svs.csv   # variants removed by global depth filter (for audit)
 ```
 
-See [`docs/methodology.md`](docs/Methodology.md) and the flow‑chart below for algorithmic details.
+### Genotype model (at a glance)
 
-![SvPhaser methodology](docs/result_images/methodology_diagram.png)
+For each SV, count HP‑tagged reads across its span → `n1` (HP1), `n2` (HP2), `N=n1+n2`.
 
-## Folder layout
+* **Global support filter**: drop only if `(n1 < min_support) AND (n2 < min_support)`.
+* **Decision tree** (ratios):
 
-```
-SvPhaser/
-├─ src/svphaser/        # importable package
-│  ├─ cli.py            # Typer entry‑point
-│  ├─ logging.py        # unified log setup
-│  └─ phasing/
-│     ├─ algorithms.py  # core maths
-│     ├─ io.py          # driver & I/O
-│     ├─ _workers.py    # per‑chrom processes
-│     └─ types.py       # thin dataclasses
-├─ tests/               # pytest suite + mini data
-├─ docs/                # extra documentation
-├─ result_images/       # generated plots & diagrams
-└─ CHANGELOG.md
-```
+  * `n1/N ≥ major_delta` → `1|0`
+  * `n2/N ≥ major_delta` → `0|1`
+  * `|n1−n2|/N ≤ equal_delta` → `1|1`
+  * else → `./.`
+* **Genotype quality**: exact binomial tail for `N ≤ 200`; continuity‑corrected normal approx for `N > 200`; Phred‑scaled, **capped at 99**. Optional `GQBIN` label via `--gq-bins` (e.g., `"30:High,10:Moderate"`).
 
-## Python usage
+Default knobs: `--min-support 10`, `--major-delta 0.70`, `--equal-delta 0.25`.
+
+---
+
+## Python API
+
+Two entry points — a convenience wrapper and the full engine:
 
 ```python
 from pathlib import Path
+from svphaser import phase  # convenience wrapper
+
+out_vcf, out_csv = phase(
+    sv_vcf="sample.vcf.gz",
+    bam="sample.bam",
+    out_dir="results",
+    min_support=10,
+    major_delta=0.70,
+    equal_delta=0.25,
+    gq_bins="30:High,10:Moderate",
+    threads=8,
+)
+```
+
+Or call the high‑level engine explicitly:
+
+```python
 from svphaser.phasing.io import phase_vcf
 
 phase_vcf(
@@ -92,64 +110,77 @@ phase_vcf(
 )
 ```
 
-The resulting `DataFrame` can be loaded from the CSV for custom analytics.
+---
 
+## Repo layout
 
+```
+SvPhaser/
+├─ src/svphaser/        # package
+│  ├─ cli.py            # Typer entry‑point (svphaser phase …)
+│  ├─ logging.py        # minimal logging setup
+│  └─ phasing/
+│     ├─ algorithms.py  # decision tree + overflow‑safe GQ
+│     ├─ io.py          # driver & VCF/CSV writer
+│     ├─ _workers.py    # per‑chromosome workers
+│     └─ types.py       # dataclasses & aliases
+├─ tests/               # pytest + smoke tests
+├─ docs/                # extra documentation
+└─ docs/result_images/  # generated plots & diagrams
+```
 
+---
 
-## Development & contributing
+## Development
 
-1. Clone and create a virtual env:
+```bash
+git clone https://github.com/your-org/SvPhaser.git && cd SvPhaser
+python -m venv .venv && source .venv/bin/activate
+pip install -e .[dev]
 
-   ```bash
-   git clone https://github.com/your‑org/SvPhaser.git && cd SvPhaser
-   python -m venv .venv && source .venv/bin/activate
-   pip install -e .[dev]
-   ```
-2. Run the test‑suite & type checks:
+# one‑time
+pre-commit install
 
-   ```bash
-   pytest -q
-   mypy src/svphaser
-   black --check src tests
-   ```
-3. Send a PR targeting the **`dev`** branch; one topic per PR.
+# checks
+pre-commit run --all-files
+pytest -q
+mypy src/svphaser
+```
 
-Please read `CONTRIBUTING.md` (to come) for style‑guides and the DCO sign‑off.
+We use **hatch‑vcs** for versioning — releases are driven by Git tags like `v2.0.1`.
+
+---
 
 ## Citing SvPhaser
 
 If SvPhaser contributed to your research, please cite:
 
 ```bibtex
-@software{svphaser2024,
-  author       = {Pranjul Mishra, Sachin Ghadak, CeNT Lab},
-  title        = {SvPhaser: haplotype‑aware SV genotyping},
-  version      = {0.2.0},
-  date         = {2024-06-18},
-  url          = {https://github.com/your‑org/SvPhaser}
+@software{svphaser2025,
+  author       = {Pranjul Mishra and Sachin Gadakh},
+  title        = {SvPhaser: haplotype‑aware structural‑variant phasing},
+  version      = {2.0.1},
+  date         = {2025-08-31},
+  url          = {https://github.com/your-org/SvPhaser}
 }
 ```
 
-
-
+---
 
 ## License
-`SvPhaser` is released under the MIT License – see [`LICENSE`](LICENSE).
 
-
-
-
+`SvPhaser` is released under the MIT License – see [LICENSE](LICENSE).
 
 ## 📬 Contact
 
-Developed by **Team5** (*BioAI Hackathon*) – Sachin Gadakh & Pranjul Mishra.
+Developed by **Team5** (*BioAI Hackathon*) – Sachin Gadakh & Pranjul Mishra.
 
 Lead contacts:
-• [pranjul.mishra@proton.me](mailto:pranjul.mishra@proton.me)
-• [s.gadakh@cent.uw.edu.pl](mailto:s.gadakh@cent.uw.edu.pl)
 
-Feedback, feature requests and bug reports are all appreciated — feel free to open a GitHub issue or reach out by e‑mail.
+* [pranjul.mishra@proton.me](mailto:pranjul.mishra@proton.me)
+* [s.gadakh@cent.uw.edu.pl](mailto:s.gadakh@cent.uw.edu.pl)
+
+Feedback, feature requests, and bug reports are welcome — please open a GitHub issue or reach out by e‑mail.
 
 ---
 
