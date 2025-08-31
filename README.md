@@ -154,6 +154,3 @@ Feedback, feature requests and bug reports are all appreciated — feel free to 
 ---
 
 *Happy phasing!*
-
-
-
