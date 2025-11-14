@@ -10,3 +10,8 @@ output_*/**/*.csv
 output_*/**/*.vcf
 output/**/*.csv
 output/**/*.vcf
+
+# Build artifacts
+/dist/
+/build/
+/*.egg-info/

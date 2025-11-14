@@ -157,7 +157,7 @@ def _vcf_info_lookup(
                 info_dict[info_key] = v
         lookup[key] = {
             "REF": rec.REF,
-            "ALT": rec.ALT[0] if rec.ALT else "<N>",
+            "ALT": ",".join(rec.ALT) if rec.ALT else "<N>",
             "QUAL": rec.QUAL if rec.QUAL is not None else ".",
             "FILTER": rec.FILTER if rec.FILTER else "PASS",
             "INFO": info_dict,
@@ -196,17 +196,18 @@ def _write_headers(
     out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
 
 
-def _compose_info_str(
-    orig_info: dict[str, object],
-    svtype: object,
-    gq_label: object,
-) -> str:
+def _compose_info_str(orig_info: dict[str, object], svtype: object, gq_label: object) -> str:
     """Compose the INFO string with SVTYPE first, original keys (no duplicate), then GQBIN."""
     items: list[str] = []
     for k, v in orig_info.items():
         if k == "SVTYPE":
             continue
         items.append(f"{k}={v}")
+        # treat boolean True as a FLAG (bare key). Keep everything else as k=v.
+        if v is True:
+            items.append(k)
+        else:
+            items.append(f"{k}={v}")
     if svtype:
         items.insert(0, f"SVTYPE={svtype}")
     if gq_label is not None and pd.notnull(gq_label):
