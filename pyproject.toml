@@ -1,49 +1,127 @@
 # -------------------------------------------------------------------
-#  SvPhaser • single-source-of-truth project metadata  (PEP-621)
+#  SvPhaser • project metadata (PEP-621) with hatch-vcs versioning
 # -------------------------------------------------------------------
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.24", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "svphaser"
-version = "0.0.1"              # bump via tag or hatchling-version later
+dynamic = ["version"]
 description = "Structural-variant phasing from HP-tagged long-read BAMs"
-authors = [{ name = "Your Name", email = "you@lab.org" }]
-license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "SvPhaser Team", email = "you@lab.org" }]
+keywords = ["genomics", "structural-variants", "phasing", "long-reads", "ONT", "BAM", "VCF"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Operating System :: OS Independent",
+]
 
 dependencies = [
   "pysam>=0.23",
   "cyvcf2>=0.30",
   "typer>=0.14",
   "pandas>=2.1",
-  # matplotlib is optional; loaded only by plots.py
 ]
 
 [project.optional-dependencies]
+plots = ["matplotlib>=3.7"]
+bench = ["pytest-benchmark>=4.0", "py-spy>=0.3"]
 dev = [
   "pytest>=8",
-  "ruff>=0.4",
-  "mypy>=1.10",
-  "black>=24.4",
-  "pre-commit>=3.7",
+  "pytest-cov>=5",
+  "pytest-xdist>=3.5",
+  "hypothesis>=6.90",
+  "ruff>=0.5",
+  "mypy>=1.8",
+  "black>=24.3",
+  "pre-commit>=3.6",
+  "build>=1.2",
+  "twine>=5.0",
+  "tox>=4.10",
+  "pandas-stubs>=2.0",
 ]
 
-[project.scripts]              # makes `svphaser …` available after install
+[project.urls]
+Homepage = "https://github.com/your-org/svphaser"
+Issues   = "https://github.com/your-org/svphaser/issues"
+Source   = "https://github.com/your-org/svphaser"
+
+[project.scripts]
 svphaser = "svphaser.cli:app"
 
 # -------------------------------------------------------------------
-#  Tooling (ruff / black / mypy) – keeps VS Code happy out-of-the-box
+#  Hatch build config (src/ layout + typed package)
+# -------------------------------------------------------------------
+[tool.hatch.build.targets.wheel]
+packages = ["src/svphaser"]
+include = ["src/svphaser/py.typed"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/**", "README.md", "LICENSE", "pyproject.toml"]
+
+# Version from Git tags like v2.0.0 → 2.0.0
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/svphaser/_version.py"
+tag-pattern = "v(?P<version>.+)"
+
+# -------------------------------------------------------------------
+#  Tooling (ruff / black / mypy / pytest / coverage)
 # -------------------------------------------------------------------
 [tool.black]
-line-length = 88
+line-length = 100
+target-version = ["py39"]
 
 [tool.ruff]
-line-length = 88
-select = ["E", "F", "W", "I"]
+line-length = 100
+target-version = "py39"
+exclude = [
+  "notebooks/**",
+  "docs/**/Presentation*/**",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C90"]
+ignore = ["E203"]  # black-compatible slicing
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
 
 [tool.mypy]
 python_version = "3.9"
 strict = true
+show_error_codes = true
+warn_unreachable = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q --strict-markers --disable-warnings"
+testpaths = ["tests"]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["svphaser"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]
+precision = 1

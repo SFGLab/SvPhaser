@@ -1,6 +1,6 @@
 # requirements-dev.txt
 
-# (optional) include runtime requirements
+# (optional) include runtime requirements for local dev
 -r requirements.txt
 
 # Testing
@@ -22,5 +22,7 @@ pre-commit>=3.6
 build>=1.2
 twine>=5.0
 
-# (optional) task runner
+# (optional) task/automation
 tox>=4.10
+# (optional) perf tools
+py-spy>=0.3

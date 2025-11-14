@@ -1,0 +1,5 @@
+# requirements.txt — runtime dependencies (PEP 621 mirror)
+pysam>=0.23
+cyvcf2>=0.30
+typer>=0.14
+pandas>=2.1

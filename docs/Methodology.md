@@ -61,7 +61,7 @@ Key decision thresholds are exposed as CLI flags and recorded in the VCF header 
 
 ### 3.1 HP1 vs HP2 depth vs GQ
 
-![HP1 vs HP2 vs GQ](result_images/3d_scatter_HP1_vs_HP2_depth_vs_Genotype_Quality(HG00733).png) 
+![HP1 vs HP2 vs GQ](result_images/3d_scatter_HP1_vs_HP2_depth_vs_Genotype_Quality(HG00733).png)
 *Figure 2 – 3‑D scatter‑plot contrasting haplotype‑specific depths (log₁₀‑scaled) with Genotype Quality.  High‑confidence calls (GQ > 30) cluster where read support is both deep and imbalanced.*
 
 ### 3.2 Depth/imbalance heat‑map

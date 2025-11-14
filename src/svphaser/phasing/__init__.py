@@ -2,6 +2,7 @@
 """Public API for svphaser.phasing."""
 
 from __future__ import annotations
+
 import logging
 
 from .algorithms import classify_haplotype, phasing_gq
