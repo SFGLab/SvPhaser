@@ -46,26 +46,27 @@ def classify_haplotype(
     *,
     min_support: int = 10,
     major_delta: float = 0.70,
-    equal_delta: float = 0.25,
+    equal_delta: float = 0.10,
 ) -> tuple[str, int]:
-    """Return (GT, GQ) using ratio thresholds and an overflow-safe GQ."""
     total = n1 + n2
-
     if n1 < min_support and n2 < min_support:
         return "./.", 0
     if total == 0:
         return "./.", 0
 
     gq = phasing_gq(n1, n2)
+
+    # 1) near-tie FIRST → homozygous phased
+    if abs(n1 - n2) / total <= equal_delta:
+        return "1|1", gq  # includes exactly 50/50
+
+    # 2) strong majority → heterozygous phased
     r1 = n1 / total
     r2 = n2 / total
-
     if r1 >= major_delta:
-        gt = "1|0"
-    elif r2 >= major_delta:
-        gt = "0|1"
-    elif abs(n1 - n2) / total <= equal_delta:
-        gt = "1|1"
-    else:
-        gt = "./."
-    return gt, gq
+        return "1|0", gq
+    if r2 >= major_delta:
+        return "0|1", gq
+
+    # 3) otherwise ambiguous
+    return "./.", gq
