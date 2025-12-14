@@ -1,37 +1,70 @@
 # SvPhaser
 
-> **Haplotype‑aware structural‑variant genotyper for long‑read data**
+> **Haplotype-aware structural-variant (SV) genotyper for long-read data**
 
-[![PyPI version](https://img.shields.io/pypi/v/svphaser.svg?logo=pypi)](https://pypi.org/project/svphaser)
-[![Tests](https://img.shields.io/github/actions/workflow/status/your‑org/SvPhaser/ci.yml?label=ci)](https://github.com/your‑org/SvPhaser/actions)
-[![License](https://img.shields.io/github/license/your‑org/SvPhaser.svg)](LICENSE)
-
----
-
-`SvPhaser` phases **pre‑called structural variants (SVs)** using *HP‑tagged* long‑read alignments (PacBio HiFi, ONT Q20+, …).  Think of it as *WhatsHap* for insertions/deletions/duplications: we do **not** discover SVs; we assign each variant a haplotype genotype (`0|1`, `1|0`, `1|1`, or `./.`) together with a **Genotype Quality (GQ)** score – all in a single, embarrassingly‑parallel pass over the genome.
-
-## Key highlights
-
-* **Fast, per‑chromosome multiprocessing** – linear scale‑out on 32‑core workstations.
-* **Deterministic Δ‑based decision tree** – no MCMC or hidden state machines.
-* **Friendly CLI** (`svphaser phase …`) and importable Python API.
-* **Seamless VCF injection** – adds `HP_GT`, `HP_GQ`, `HP_GQBIN` INFO tags while copying the original header verbatim.
-* **Configurable confidence bins** and publication‑ready plots (see `result_images/`).
+[![PyPI version](https://img.shields.io/pypi/v/svphaser.svg?logo=pypi)](https://pypi.org/project/svphaser/)
+[![Python](https://img.shields.io/pypi/pyversions/svphaser.svg)](https://pypi.org/project/svphaser/)
+[![License](https://img.shields.io/github/license/SFGLab/SvPhaser.svg)](LICENSE)
 
 ---
+
+**SvPhaser** phases **pre-called structural variants (SVs)** using **HP-tagged** long-read alignments (PacBio HiFi, ONT Q20+, …).
+
+Think of it as *WhatsHap* for insertions/deletions/duplications:
+- **we do not discover SVs**
+- **we assign haplotype genotypes** (`0|1`, `1|0`, `1|1`, or `./.`)
+- and compute a **Genotype Quality (GQ)** score
+
+All in a single, embarrassingly-parallel pass over the genome.
+
+## Highlights
+
+- **Fast per-chromosome multiprocessing** (scale-out on multi-core CPUs).
+- **Deterministic Δ-based decision logic** (no MCMC / HMM).
+- **CLI + Python API**.
+- **Non-destructive VCF augmentation**: injects phasing fields while preserving the original header and records.
+- **Configurable confidence bins** + optional plots.
 
 ## Installation
 
+### From PyPI (recommended)
+
 ```bash
-# Requires Python ≥3.9
-pip install svphaser            # PyPI (coming soon)
-# or
-pip install git+https://github.com/your‑org/SvPhaser.git@v0.2.0
+# Requires Python >= 3.9
+pip install svphaser
+````
+
+Optional extras (if you use them):
+
+```bash
+pip install "svphaser[plots]"
+pip install "svphaser[bench]"
+pip install "svphaser[dev]"
 ```
 
-`cyvcf2`, `pysam`, `typer[all]`, and `pandas` are pulled in automatically.
+### From source
 
-## Quick‑start
+```bash
+git clone https://github.com/SFGLab/SvPhaser.git
+cd SvPhaser
+pip install -e .
+```
+
+## Inputs & requirements
+
+SvPhaser expects:
+
+1. **Unphased SV VCF** (`.vcf` / `.vcf.gz`)
+
+   * SVs should already be called by your preferred SV caller.
+
+2. **HP-tagged BAM** (long-read alignments)
+
+   * Reads must contain haplotype tags (e.g., `HP`) produced by an upstream phasing pipeline.
+
+If your BAM is not HP-tagged, SvPhaser cannot assign haplotypes.
+
+## Quick start (CLI)
 
 ```bash
 svphaser phase \
@@ -45,36 +78,20 @@ svphaser phase \
     --threads 32
 ```
 
-Outputs (written inside **`results/`**)
+### Outputs
 
-```
-sample_unphased_phased.vcf   # original VCF + HP_* INFO fields
-sample_unphased_phased.csv   # tidy table for plotting / downstream R
-```
+Inside `results/`:
 
-See [`docs/methodology.md`](docs/Methodology.md) and the flow‑chart below for algorithmic details.
+* `*_phased.vcf` — your original VCF with additional INFO fields:
 
-![SvPhaser methodology](docs/result_images/methodology_diagram.png)
+  * `HP_GT` — phased genotype
+  * `HP_GQ` — genotype quality score
+  * `HP_GQBIN` — confidence bin label (based on your `--gq-bins`)
+* `*_phased.csv` — tidy table for plotting / downstream analysis
 
-## Folder layout
+For algorithmic details, see: **`docs/methodology.md`**.
 
-```
-SvPhaser/
-├─ src/svphaser/        # importable package
-│  ├─ cli.py            # Typer entry‑point
-│  ├─ logging.py        # unified log setup
-│  └─ phasing/
-│     ├─ algorithms.py  # core maths
-│     ├─ io.py          # driver & I/O
-│     ├─ _workers.py    # per‑chrom processes
-│     └─ types.py       # thin dataclasses
-├─ tests/               # pytest suite + mini data
-├─ docs/                # extra documentation
-├─ result_images/       # generated plots & diagrams
-└─ CHANGELOG.md
-```
-
-## Python usage
+## Python API
 
 ```python
 from pathlib import Path
@@ -92,65 +109,76 @@ phase_vcf(
 )
 ```
 
-The resulting `DataFrame` can be loaded from the CSV for custom analytics.
+The phased table can also be loaded from the generated CSV for custom analytics.
 
+## Repository structure (high level)
 
+```
+SvPhaser/
+├─ src/svphaser/         # importable package
+├─ tests/                # test suite + small fixtures (if present)
+├─ docs/                 # methodology + notes
+├─ notebooks/            # experiments / analysis (if present)
+├─ figures/              # plots & diagrams (if present)
+├─ pyproject.toml
+└─ CHANGELOG.md
+```
 
+## Development
 
-## Development & contributing
+```bash
+git clone https://github.com/SFGLab/SvPhaser.git
+cd SvPhaser
 
-1. Clone and create a virtual env:
+python -m venv .venv
+source .venv/bin/activate
 
-   ```bash
-   git clone https://github.com/your‑org/SvPhaser.git && cd SvPhaser
-   python -m venv .venv && source .venv/bin/activate
-   pip install -e .[dev]
-   ```
-2. Run the test‑suite & type checks:
+pip install -e ".[dev]"
+pytest -q
+mypy src/svphaser
+```
 
-   ```bash
-   pytest -q
-   mypy src/svphaser
-   black --check src tests
-   ```
-3. Send a PR targeting the **`dev`** branch; one topic per PR.
-
-Please read `CONTRIBUTING.md` (to come) for style‑guides and the DCO sign‑off.
+See `CONTRIBUTING.md` for contribution guidelines.
 
 ## Citing SvPhaser
 
 If SvPhaser contributed to your research, please cite:
 
 ```bibtex
-@software{svphaser2024,
-  author       = {Pranjul Mishra, Sachin Ghadak, CeNT Lab},
-  title        = {SvPhaser: haplotype‑aware SV genotyping},
-  version      = {0.2.0},
-  date         = {2024-06-18},
-  url          = {https://github.com/your‑org/SvPhaser}
+@software{svphaser2025,
+  author  = {Pranjul Mishra and Sachin Gadakh},
+  title   = {SvPhaser: Haplotype-aware structural-variant genotyping from HP-tagged long-read BAMs},
+  version = {2.0.6},
+  year    = {2025},
+  month   = nov,
+  url     = {https://github.com/SFGLab/SvPhaser},
+  note    = {PyPI: https://pypi.org/project/svphaser/}
 }
 ```
 
-
-
+(If you need maximum rigor for a paper, cite a specific git commit hash too.)
 
 ## License
-`SvPhaser` is released under the MIT License – see [`LICENSE`](LICENSE).
 
+SvPhaser is released under the **MIT License** — see [LICENSE](LICENSE).
 
+## Contact
 
+Developed by **Team 5 (BioAI Hackathon)**.
 
+* Pranjul Mishra — [pranjul.mishra@proton.me](mailto:pranjul.mishra@proton.me)
+* Sachin Gadakh — [s.gadakh@cent.uw.edu.pl](mailto:s.gadakh@cent.uw.edu.pl)
 
-## 📬 Contact
+Issues and feature requests: please open a GitHub issue.
 
-Developed by **Team5** (*BioAI Hackathon*) – Sachin Gadakh & Pranjul Mishra.
+```
 
-Lead contacts:
-• [pranjul.mishra@proton.me](mailto:pranjul.mishra@proton.me)
-• [s.gadakh@cent.uw.edu.pl](mailto:s.gadakh@cent.uw.edu.pl)
+### Two hard notes (don’t ignore)
+- If you **don’t actually have CI set up**, don’t show a CI badge. A fake badge is worse than no badge.
+- If your repo layout doesn’t include `notebooks/figures/tests fixtures`, either adjust that tree block or remove it to avoid “template smell.”
 
-Feedback, feature requests and bug reports are all appreciated — feel free to open a GitHub issue or reach out by e‑mail.
+If you want, paste your **current `.github/workflows` filenames** (or tell me if you have none) and I’ll add the *correct* CI badge line too—without guessing.
+::contentReference[oaicite:1]{index=1}
+```
 
----
-
-*Happy phasing!*
+[1]: https://pypi.org/project/svphaser/ "svphaser · PyPI"
