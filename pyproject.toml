@@ -54,9 +54,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/svphaser"
-Issues   = "https://github.com/your-org/svphaser/issues"
-Source   = "https://github.com/your-org/svphaser"
+Homepage = "https://github.com/SFGLab/SvPhaser"
+Issues   = "https://github.com/SFGLab/SvPhaser/issues"
+Source   = "https://github.com/SFGLab/SvPhaser"
 
 [project.scripts]
 svphaser = "svphaser.cli:app"
@@ -71,13 +71,23 @@ include = ["src/svphaser/py.typed"]
 [tool.hatch.build.targets.sdist]
 include = ["src/**", "README.md", "LICENSE", "pyproject.toml"]
 
-# Version from Git tags like v2.0.0 → 2.0.0
+# -------------------------------------------------------------------
+#  Versioning: hatch-vcs (tags like v2.0.8 -> 2.0.8)
+# -------------------------------------------------------------------
 [tool.hatch.version]
 source = "vcs"
+tag-pattern = "v(?P<version>.+)"
 
+# These are setuptools-scm options passed through hatch-vcs.
+# local_scheme removes "+g<hash>" which public indexes must not accept.
+# version_scheme avoids auto-bumping to the next patch on non-tag commits.
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
+version_scheme = "no-guess-dev"
+
+# Write resolved version to file at build time
 [tool.hatch.build.hooks.vcs]
 version-file = "src/svphaser/_version.py"
-tag-pattern = "v(?P<version>.+)"
 
 # -------------------------------------------------------------------
 #  Tooling (ruff / black / mypy / pytest / coverage)
