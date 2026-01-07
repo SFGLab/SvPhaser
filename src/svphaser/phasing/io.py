@@ -1,28 +1,54 @@
-"""
-svphaser.phasing.io
+"""svphaser.phasing.io
 ===================
 High-level “engine” – orchestrates per-chromosome workers, merges results,
-applies the global depth filter, then writes CSV + VCF.
+applies the global support filter, then writes CSV + VCF.
 
-Workers receive only simple (pickle-safe) arguments; each worker opens its
-own BAM/VCF to avoid sharing handles between processes.
+Step B update (biological correctness):
+- `min_support` is interpreted as a *total ALT-support* threshold (n1+n2).
+  The filter drops an SV only if (n1+n2) < min_support.
+
+Step A fixes retained:
+- collision-resistant VCF record matching using (CHROM, POS, ID, END, ALT)
+- correct INFO composition (no duplicated keys; proper FLAG handling)
+- typing fixes to satisfy Pylance/Mypy
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import multiprocessing as mp
 from pathlib import Path
+from typing import Any, TypedDict
 
 import pandas as pd
 from cyvcf2 import Reader
 
 from ._workers import _phase_chrom_worker
-from .types import GQBin, WorkerOpts
+from .types import GQBin, SVKey, SVKeyLegacy, WorkerOpts
 
 __all__ = ["phase_vcf"]
 
 logger = logging.getLogger(__name__)
+
+
+class VcfRec(TypedDict):
+    REF: str
+    ALT: str
+    QUAL: object
+    FILTER: str
+    INFO: dict[str, Any]
+
+
+def _is_missing_scalar(x: Any) -> bool:
+    """True for None / NaN / empty string."""
+    if x is None:
+        return True
+    if isinstance(x, float) and math.isnan(x):
+        return True
+    if isinstance(x, str) and x.strip() == "":
+        return True
+    return False
 
 
 def phase_vcf(
@@ -56,7 +82,7 @@ def phase_vcf(
                 thr_s, lbl = thr_lbl.split(":")
             except ValueError as err:
                 raise ValueError(
-                    f"Invalid gq-bin specifier: '{thr_lbl}'. " "Use '30:High,10:Moderate'."
+                    f"Invalid gq-bin specifier: '{thr_lbl}'. Use '30:High,10:Moderate'."
                 ) from err
             bins.append((int(thr_s), lbl))
         bins.sort(key=lambda x: x[0], reverse=True)
@@ -89,7 +115,6 @@ def phase_vcf(
         ctx = mp.get_context("spawn")
 
     if threads == 1:
-        # Serial path is handy for debugging
         for args in worker_args:
             df = _phase_chrom_worker(*args)
             dataframes.append(df)
@@ -102,16 +127,29 @@ def phase_vcf(
                 chrom = df.iloc[0]["chrom"] if not df.empty else "?"
                 logger.info("chr %-6s ✔ phased %5d SVs", chrom, len(df))
 
-    # 5 ─ Merge & apply *global* depth filter
+    # 5 ─ Merge & apply *global* support filter (Step B: total ALT-support)
     if dataframes:
         merged = pd.concat(dataframes, ignore_index=True)
     else:
         merged = pd.DataFrame(
-            columns=["chrom", "pos", "id", "svtype", "n1", "n2", "gt", "gq", "gq_label"]
+            columns=[
+                "chrom",
+                "pos",
+                "end",
+                "id",
+                "alt",
+                "svtype",
+                "n1",
+                "n2",
+                "gt",
+                "gq",
+                "gq_label",
+            ]
         )
 
     pre = len(merged)
-    keep = ~((merged["n1"] < min_support) & (merged["n2"] < min_support))
+    total_support = merged["n1"].astype(int) + merged["n2"].astype(int)
+    keep = total_support >= int(min_support)
 
     stem = sv_vcf.name.removesuffix(".vcf.gz").removesuffix(".vcf")
 
@@ -122,7 +160,7 @@ def phase_vcf(
 
     kept = merged.loc[keep].reset_index(drop=True)
     if dropped := pre - len(kept):
-        logger.info("Depth filter removed %d SVs", dropped)
+        logger.info("Support filter removed %d SVs", dropped)
 
     # 6 ─ Write CSV
     out_csv = out_dir / f"{stem}_phased.csv"
@@ -138,32 +176,54 @@ def phase_vcf(
 # ──────────────────────────────────────────────────────────────────────
 #  Small helpers to keep complexity down
 # ──────────────────────────────────────────────────────────────────────
+
+
 def _vcf_info_lookup(
     in_vcf: Path,
-) -> tuple[dict[tuple[str, int, str], dict[str, object]], list[str], str]:
-    """Scan input VCF once: return (lookup, raw_header_lines, sample_name)."""
+) -> tuple[dict[SVKey, VcfRec], dict[SVKeyLegacy, list[SVKey]], list[str], str]:
+    """Scan input VCF once.
+
+    Returns:
+      - full_lookup: maps (CHROM, POS, ID, END, ALT) -> record components
+      - legacy_index: maps (CHROM, POS, ID) -> list of full keys (fallback)
+      - raw_header_lines
+      - sample_name
+    """
     rdr = Reader(str(in_vcf))
     raw_header_lines = rdr.raw_header.strip().splitlines()
     sample_name = rdr.samples[0] if rdr.samples else "SAMPLE"
 
-    lookup: dict[tuple[str, int, str], dict[str, object]] = {}
+    full_lookup: dict[SVKey, VcfRec] = {}
+    legacy_index: dict[SVKeyLegacy, list[SVKey]] = {}
+
     for rec in rdr:
-        key = (rec.CHROM, rec.POS, rec.ID or ".")
-        info_dict: dict[str, object] = {}
+        chrom = rec.CHROM
+        pos = int(rec.POS)
+        vid = rec.ID or "."
+        end = int(rec.end) if getattr(rec, "end", None) is not None else int(pos)
+        alt = ",".join(rec.ALT) if rec.ALT else "<N>"
+
+        info_dict: dict[str, Any] = {}
         for k in rec.INFO:
             info_key = k[0] if isinstance(k, tuple) else k
             v = rec.INFO.get(info_key)
             if v is not None:
                 info_dict[info_key] = v
-        lookup[key] = {
+
+        fkey: SVKey = (chrom, pos, vid, end, alt)
+        lkey: SVKeyLegacy = (chrom, pos, vid)
+
+        full_lookup[fkey] = {
             "REF": rec.REF,
-            "ALT": ",".join(rec.ALT) if rec.ALT else "<N>",
+            "ALT": alt,
             "QUAL": rec.QUAL if rec.QUAL is not None else ".",
             "FILTER": rec.FILTER if rec.FILTER else "PASS",
             "INFO": info_dict,
         }
+        legacy_index.setdefault(lkey, []).append(fkey)
+
     rdr.close()
-    return lookup, raw_header_lines, sample_name
+    return full_lookup, legacy_index, raw_header_lines, sample_name
 
 
 def _write_headers(
@@ -196,23 +256,60 @@ def _write_headers(
     out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
 
 
-def _compose_info_str(orig_info: dict[str, object], svtype: object, gq_label: object) -> str:
-    """Compose the INFO string with SVTYPE first, original keys (no duplicate), then GQBIN."""
+def _compose_info_str(orig_info: dict[str, Any], svtype: Any, gq_label: Any) -> str:
+    """Compose INFO with SVTYPE first, proper FLAG handling, then GQBIN."""
     items: list[str] = []
+
+    if svtype:
+        items.append(f"SVTYPE={svtype}")
+
     for k, v in orig_info.items():
         if k == "SVTYPE":
             continue
-        items.append(f"{k}={v}")
-        # treat boolean True as a FLAG (bare key). Keep everything else as k=v.
+        if v is None:
+            continue
+        # cyvcf2 represents INFO flags as boolean True
         if v is True:
-            items.append(k)
+            items.append(str(k))
         else:
             items.append(f"{k}={v}")
-    if svtype:
-        items.insert(0, f"SVTYPE={svtype}")
-    if gq_label is not None and pd.notnull(gq_label):
+
+    if not _is_missing_scalar(gq_label):
         items.append(f"GQBIN={gq_label}")
+
     return ";".join(items) if items else "."
+
+
+def _select_info_record(
+    full_lookup: dict[SVKey, VcfRec],
+    legacy_index: dict[SVKeyLegacy, list[SVKey]],
+    *,
+    chrom: str,
+    pos: int,
+    vid: str,
+    end: int | None,
+    alt: str | None,
+) -> VcfRec | None:
+    """Pick the best matching input VCF record for this phased row."""
+    if end is not None and alt is not None:
+        hit = full_lookup.get((chrom, pos, vid, int(end), str(alt)))
+        if hit is not None:
+            return hit
+
+    candidates = legacy_index.get((chrom, pos, vid), [])
+    if not candidates:
+        return None
+
+    if len(candidates) == 1:
+        return full_lookup[candidates[0]]
+
+    if end is not None:
+        end_matches = [k for k in candidates if k[3] == int(end)]
+        if len(end_matches) == 1:
+            return full_lookup[end_matches[0]]
+
+    # Still ambiguous: refuse to guess
+    return None
 
 
 def _write_phased_vcf(
@@ -223,7 +320,7 @@ def _write_phased_vcf(
     gqbin_in_header: bool,
 ) -> None:
     """Write a phased VCF: tab-delimited, compliant, with ensured GT/GQ (and GQBIN if used)."""
-    lookup, raw_header_lines, sample_name = _vcf_info_lookup(in_vcf)
+    full_lookup, legacy_index, raw_header_lines, sample_name = _vcf_info_lookup(in_vcf)
 
     with open(out_vcf, "w", newline="") as out:
         _write_headers(out, raw_header_lines, sample_name, gqbin_in_header=gqbin_in_header)
@@ -232,14 +329,26 @@ def _write_phased_vcf(
             chrom = str(getattr(row, "chrom", "."))
             pos = int(getattr(row, "pos", 0))
             vid = str(getattr(row, "id", "."))
+
+            end = getattr(row, "end", None)
+            alt = getattr(row, "alt", None)
+
             gt = str(getattr(row, "gt", "./."))
             gq = str(getattr(row, "gq", "0"))
             svtype = getattr(row, "svtype", None)
             gq_label = getattr(row, "gq_label", None)
 
-            info = lookup.get((chrom, pos, vid))
+            info = _select_info_record(
+                full_lookup,
+                legacy_index,
+                chrom=chrom,
+                pos=pos,
+                vid=vid,
+                end=int(end) if end is not None else None,
+                alt=str(alt) if alt is not None else None,
+            )
             if info is None:
-                logger.warning("Could not find VCF info for %s:%s %s", chrom, pos, vid)
+                logger.warning("Could not uniquely match VCF record for %s:%s %s", chrom, pos, vid)
                 continue
 
             info_str = _compose_info_str(info["INFO"], svtype, gq_label)

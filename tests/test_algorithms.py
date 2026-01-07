@@ -28,9 +28,10 @@ def test_classify_thresholds_basic():
     # strong majority to HP2
     gt, _ = classify_haplotype(30, 70, min_support=1, major_delta=0.6, equal_delta=0.1)
     assert gt == "0|1"
-    # near tie → 1|1
+    # near tie → ambiguous (do not call homozygous ALT)
     gt, _ = classify_haplotype(51, 49, min_support=1, major_delta=0.6, equal_delta=0.05)
-    assert gt == "1|1"
+    assert gt == "./."
+
     # below support on both → drop
     gt, _ = classify_haplotype(0, 0, min_support=1, major_delta=0.6, equal_delta=0.1)
     assert gt == "./."

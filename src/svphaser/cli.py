@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""
-svphaser.cli
+"""svphaser.cli
 ============
 Command-line interface for **SvPhaser**.
 
 The program writes two files inside **--out-dir** (or the CWD):
 
-* ``<stem>_phased.vcf``   (uncompressed; GT/GQ and optional HP_GQBIN injected)
-* ``<stem>_phased.csv``   (tabular summary including gq_label column)
+* ``<stem>_phased.vcf``   (uncompressed; GT/GQ injected; optional INFO=GQBIN)
+* ``<stem>_phased.csv``   (tabular summary incl. n1/n2/gt/gq and optional gq_label)
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,7 +27,7 @@ from svphaser import (
 app = typer.Typer(add_completion=False, rich_markup_mode="rich")
 
 
-def _version_callback(value: bool):
+def _version_callback(value: bool) -> None:
     if value:
         typer.echo(__version__)
         raise typer.Exit()
@@ -44,30 +44,20 @@ def main(
             callback=_version_callback,
         ),
     ] = None
-):
+) -> None:
     """SvPhaser – Structural-variant phasing from HP-tagged long-read BAMs."""
-    # no-op; callback handles --version
     return
 
 
-# ──────────────────────────────────────────────────────────────────────────
-#  phase command
-# ──────────────────────────────────────────────────────────────────────────
 @app.command("phase")
 def phase_cmd(
     sv_vcf: Annotated[
         Path,
-        typer.Argument(
-            exists=True,
-            help="Input *un-phased* SV VCF (.vcf or .vcf.gz)",
-        ),
+        typer.Argument(exists=True, help="Input *un-phased* SV VCF (.vcf or .vcf.gz)"),
     ],
     bam: Annotated[
         Path,
-        typer.Argument(
-            exists=True,
-            help="Long-read BAM/CRAM with HP tags",
-        ),
+        typer.Argument(exists=True, help="Long-read BAM/CRAM with HP tags"),
     ],
     out_dir: Annotated[
         Path,
@@ -90,9 +80,8 @@ def phase_cmd(
         int,
         typer.Option(
             help=(
-                "Minimum HP-tagged reads per haplotype. "
-                "SVs where *both* n1 AND n2 fall below this "
-                "are dropped entirely."
+                "Minimum TOTAL ALT-supporting reads required to keep an SV (n1+n2). "
+                "If (n1+n2) < min_support the SV is dropped (written to *_dropped_svs.csv)."
             ),
             show_default=True,
         ),
@@ -100,14 +89,14 @@ def phase_cmd(
     major_delta: Annotated[
         float,
         typer.Option(
-            help="r >= this ⇒ strong majority ⇒ GT 1|0 or 0|1",
+            help="max(n1,n2)/N >= this ⇒ strong majority ⇒ GT 1|0 or 0|1",
             show_default=True,
         ),
     ] = DEFAULT_MAJOR_DELTA,
     equal_delta: Annotated[
         float,
         typer.Option(
-            help="|n1−n2|/N ≤ this ⇒ near-tie ⇒ GT 1|1",
+            help="|n1−n2|/N <= this ⇒ near-tie ⇒ GT ./. (ambiguous)",
             show_default=True,
         ),
     ] = DEFAULT_EQUAL_DELTA,
@@ -116,9 +105,8 @@ def phase_cmd(
         str,
         typer.Option(
             help=(
-                "Comma-separated GQ≥threshold:Label definitions "
-                "(e.g. '30:High,10:Moderate'). Labels appear in the CSV "
-                "[gq_label] and in the VCF INFO field HP_GQBIN when set."
+                "Comma-separated GQ≥threshold:Label definitions (e.g. '30:High,10:Moderate'). "
+                "Labels appear in CSV column [gq_label] and in the VCF INFO field GQBIN."
             ),
             show_default=True,
         ),
@@ -134,13 +122,11 @@ def phase_cmd(
         ),
     ] = None,
 ) -> None:
-    """Phase structural variants using HP-tagged read evidence."""
-    # Initialise logging BEFORE we import anything that might log
+    """Phase structural variants using SV-type-aware ALT-support evidence."""
     from svphaser.logging import init as _init_logging
 
-    _init_logging("INFO")  # or "DEBUG" if you want more detail
+    _init_logging("INFO")
 
-    # Resolve output paths
     if not out_dir.exists():
         out_dir.mkdir(parents=True)
 
@@ -153,25 +139,21 @@ def phase_cmd(
     out_vcf = out_dir / f"{stem}_phased.vcf"
     out_csv = out_dir / f"{stem}_phased.csv"
 
-    # Lazy import so `svphaser --help` works without heavy deps
     from svphaser.phasing.io import phase_vcf
 
     try:
         phase_vcf(
             sv_vcf,
             bam,
-            out_dir=out_dir,  # type: ignore[arg-type]
+            out_dir=out_dir,
             min_support=min_support,
             major_delta=major_delta,
             equal_delta=equal_delta,
-            gq_bins=gq_bins,  # type: ignore[arg-type]
+            gq_bins=gq_bins,
             threads=threads,
         )
         typer.secho(f"✔ Phased VCF → {out_vcf}", fg=typer.colors.GREEN)
         typer.secho(f"✔ Phased CSV → {out_csv}", fg=typer.colors.GREEN)
-    except Exception:  # pragma: no cover
-        typer.secho(
-            "[SvPhaser] 💥  Unhandled error during phasing",
-            fg=typer.colors.RED,
-        )
+    except Exception:
+        typer.secho("[SvPhaser] 💥  Unhandled error during phasing", fg=typer.colors.RED)
         raise
