@@ -3,6 +3,12 @@
 1) Exact binomial tail for small depth (N ≤ 200).
 2) Continuity-corrected normal approximation for deep coverage (N > 200).
 3) Phred GQ capped at 99.
+
+Step B semantics:
+- `min_support` is interpreted as a *total ALT-support* threshold (n1+n2).
+- Near-ties are treated as *ambiguous* (./.), not homozygous ALT.
+  Homozygous ALT (1|1) should come from the caller's genotype (input VCF),
+  not from a balance test.
 """
 
 from __future__ import annotations
@@ -45,20 +51,31 @@ def classify_haplotype(
     n2: int,
     *,
     min_support: int = 10,
-    major_delta: float = 0.70,
+    major_delta: float = 0.60,
     equal_delta: float = 0.10,
 ) -> tuple[str, int]:
+    """Classify which haplotype carries the ALT allele.
+
+    Returns:
+      - GT: "1|0" (ALT on hap1) or "0|1" (ALT on hap2) or "./." (ambiguous)
+      - GQ: phred-scaled confidence based on haplotype imbalance
+
+    Notes:
+      - `min_support` is applied to total ALT-support reads.
+      - Near-ties (<= equal_delta) are treated as ambiguous (./.).
+    """
+
     total = n1 + n2
-    if n1 < min_support and n2 < min_support:
+    if total <= 0:
         return "./.", 0
-    if total == 0:
+    if total < min_support:
         return "./.", 0
 
     gq = phasing_gq(n1, n2)
 
-    # 1) near-tie FIRST → homozygous phased
+    # 1) near-tie → ambiguous
     if abs(n1 - n2) / total <= equal_delta:
-        return "1|1", gq  # includes exactly 50/50
+        return "./.", gq
 
     # 2) strong majority → heterozygous phased
     r1 = n1 / total

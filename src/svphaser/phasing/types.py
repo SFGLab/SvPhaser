@@ -1,7 +1,8 @@
 """svphaser.phasing.types
 ========================
-Central place for common type aliases & lightweight data classes.
-Keeping them here avoids circular imports and MyPy noise.
+Common type aliases & small data structures.
+
+We keep this module light to avoid circular imports.
 """
 
 from __future__ import annotations
@@ -9,8 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NamedTuple
 
-SVKey = tuple[str, int, str]  # (chrom, POS, ID) – ID is "." if empty
-GQBin = tuple[int, str]  # (threshold, label), e.g. (30, "High")
+# Legacy key (older writer used this; can collide when ID='.' or same POS repeats)
+SVKeyLegacy = tuple[str, int, str]  # (CHROM, POS, ID)
+
+# Collision-resistant key for matching phased rows back to original VCF records
+SVKey = tuple[str, int, str, int, str]  # (CHROM, POS, ID, END, ALT)
+
+# GQ bin spec: (threshold, label)
+GQBin = tuple[int, str]  # e.g. (30, "High")
 
 
 @dataclass(slots=True, frozen=True)
@@ -20,7 +27,7 @@ class WorkerOpts:
     min_support: int
     major_delta: float
     equal_delta: float
-    gq_bins: list[GQBin]  # already parsed by cli → phase_vcf
+    gq_bins: list[GQBin]
 
 
 class CallTuple(NamedTuple):

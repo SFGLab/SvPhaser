@@ -1,7 +1,10 @@
 """Top-level SvPhaser package.
 
-Public surface kept tiny: a version string and a convenience helper
-that calls the library’s main phasing routine.
+Public surface kept tiny:
+- __version__
+- a convenience `phase()` wrapper around svphaser.phasing.io.phase_vcf()
+
+Defaults are chosen to match the recommended SvPhaser settings for long-read SV phasing.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ from pathlib import Path
 # --------------------------------------------------------------------
 # Robust version lookup:
 # - Prefer installed package metadata (works for wheels and PEP 660 editables)
-# - Fall back to placeholder in _version.py for raw-source/dev use
+# - Fall back to _version.py for raw-source/dev use
 # --------------------------------------------------------------------
 try:
     from importlib.metadata import version as _pkg_version  # Python 3.8+
@@ -19,14 +22,14 @@ try:
     __version__ = _pkg_version("svphaser")
 except Exception:
     try:
-        from ._version import __version__  # "0+unknown" in repo; overwritten in builds
+        from ._version import __version__  # overwritten in builds when using setuptools-scm
     except Exception:  # highly defensive
         __version__ = "0+unknown"
 
 # Centralized defaults (keep CLI in sync)
 DEFAULT_MIN_SUPPORT: int = 10
-DEFAULT_MAJOR_DELTA: float = 0.70
-DEFAULT_EQUAL_DELTA: float = 0.25
+DEFAULT_MAJOR_DELTA: float = 0.60
+DEFAULT_EQUAL_DELTA: float = 0.10
 DEFAULT_GQ_BINS: str = "30:High,10:Moderate"
 
 
@@ -44,8 +47,10 @@ def phase(
 ) -> tuple[Path, Path]:
     """Phase *sv_vcf* using HP-tagged *bam*, writing outputs into *out_dir*.
 
-    Thin wrapper around :py:func:`svphaser.phasing.io.phase_vcf` so users/tests
-    can skip importing submodules.
+    Notes
+    -----
+    - Step B semantics: `min_support` is applied to TOTAL ALT-supporting reads (n1+n2).
+    - Near-ties (<= equal_delta) are treated as ambiguous (./.), not homozygous ALT.
 
     Returns
     -------
@@ -66,13 +71,13 @@ def phase(
     out_csv = out_dir_p / f"{stem}_phased.csv"
 
     phase_vcf(
-        sv_vcf,
-        bam,
-        out_dir=out_dir_p,  # type: ignore[arg-type]
+        Path(sv_vcf),
+        Path(bam),
+        out_dir=out_dir_p,
         min_support=min_support,
         major_delta=major_delta,
         equal_delta=equal_delta,
-        gq_bins=gq_bins,  # type: ignore[arg-type]
+        gq_bins=gq_bins,
         threads=threads,
     )
     return out_vcf, out_csv

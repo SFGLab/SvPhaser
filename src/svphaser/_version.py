@@ -10,15 +10,15 @@ __all__ = [
     "commit_id",
 ]
 
-from typing import TYPE_CHECKING
-
+TYPE_CHECKING = False
 if TYPE_CHECKING:
-    # Concrete types only for type checkers; at runtime these become `object`
-    VERSION_TUPLE = tuple[int | str, ...]
-    COMMIT_ID = str | None
+    from typing import Union
+
+    VERSION_TUPLE = tuple[Union[int, str], ...]
+    COMMIT_ID = Union[str, None]
 else:
-    VERSION_TUPLE = object  # type: ignore[assignment]
-    COMMIT_ID = object  # type: ignore[assignment]
+    VERSION_TUPLE = object
+    COMMIT_ID = object
 
 version: str
 __version__: str
@@ -27,12 +27,7 @@ version_tuple: VERSION_TUPLE
 commit_id: COMMIT_ID
 __commit_id__: COMMIT_ID
 
-# Keep whatever your build system wrote here; examples:
-# __version__ = version = "2.0.5"
-# __version_tuple__ = version_tuple = (2, 0, 5)
-# If your tooling injects a dev version, leave it as-is.
-
-__version__ = version = "2.0.5"
-__version_tuple__ = version_tuple = (2, 0, 5)
+__version__ = version = "2.0.7"
+__version_tuple__ = version_tuple = (2, 0, 7)
 
 __commit_id__ = commit_id = None
