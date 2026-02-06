@@ -56,11 +56,17 @@ def phase_vcf(
     bam: Path,
     *,
     out_dir: Path,
-    min_support: int,
-    major_delta: float,
-    equal_delta: float,
-    gq_bins: str,
-    threads: int | None,
+    min_support: int = 10,
+    min_tagged_support: int = 3,
+    major_delta: float = 0.60,
+    equal_delta: float = 0.10,
+    gq_bins: str = "0:LOW,20:MED,50:HIGH",
+    support_mode: str = "hybrid",
+    bp_window: int = 100,
+    dynamic_window: bool = True,
+    tie_to_hom_alt: bool = True,
+    svp_info: bool = True,
+    threads: int | None = None,
 ) -> None:
     """Phase *sv_vcf* against *bam* and write outputs to *out_dir*.
 
@@ -90,9 +96,14 @@ def phase_vcf(
     # 2 ─ Build immutable options holder for workers
     opts = WorkerOpts(
         min_support=min_support,
+        min_tagged_support=min_tagged_support,
         major_delta=major_delta,
         equal_delta=equal_delta,
         gq_bins=bins,
+        support_mode=support_mode,
+        bp_window=bp_window,
+        dynamic_window=dynamic_window,
+        tie_to_hom_alt=tie_to_hom_alt,
     )
 
     # 3 ─ Discover chromosomes (cheap – no variants parsed yet)
@@ -148,7 +159,10 @@ def phase_vcf(
         )
 
     pre = len(merged)
-    total_support = merged["n1"].astype(int) + merged["n2"].astype(int)
+    if "support_total" in merged.columns:
+        total_support = merged["support_total"].astype(int)
+    else:
+        total_support = merged["n1"].astype(int) + merged["n2"].astype(int)
     keep = total_support >= int(min_support)
 
     stem = sv_vcf.name.removesuffix(".vcf.gz").removesuffix(".vcf")
@@ -169,7 +183,14 @@ def phase_vcf(
 
     # 7 ─ Write VCF
     out_vcf = out_dir / f"{stem}_phased.vcf"
-    _write_phased_vcf(out_vcf, sv_vcf, kept, gqbin_in_header=bool(bins))
+    _write_phased_vcf(
+        out_vcf,
+        sv_vcf,
+        kept,
+        gqbin_in_header=bool(bins),
+        svp_info_in_header=svp_info,
+        svp_info=svp_info,
+    )
     logger.info("VCF → %s", out_vcf)
 
 
@@ -232,11 +253,13 @@ def _write_headers(
     sample_name: str,
     *,
     gqbin_in_header: bool,
+    svp_info_in_header: bool,
 ) -> None:
     """Write preserved meta headers + ensure GT/GQ/GQBIN, then the column header."""
     have_gt = any("##FORMAT=<ID=GT" in ln for ln in raw_header_lines)
     have_gq = any("##FORMAT=<ID=GQ" in ln for ln in raw_header_lines)
     have_gqbin = any("##INFO=<ID=GQBIN" in ln for ln in raw_header_lines)
+    have_svp_hp1 = any("##INFO=<ID=SVP_HP1" in ln for ln in raw_header_lines)
 
     for line in raw_header_lines:
         if line.startswith("##"):
@@ -253,11 +276,72 @@ def _write_headers(
             "##INFO=<ID=GQBIN,Number=1,Type=String," 'Description="GQ bin label from SvPhaser">\n'
         )
 
+    # SvPhaser INFO annotations (V2.1.1). Written by default so the VCF is
+    # self-describing in downstream tools.
+    if svp_info_in_header and not have_svp_hp1:
+        out.write(
+            "##INFO=<ID=SVP_MODE,Number=1,Type=String,"
+            'Description="SvPhaser: evidence mode used (RNAMES/HEURISTIC)">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_HP1,Number=1,Type=Integer,"
+            'Description="SvPhaser: HP=1 supporting reads">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_HP2,Number=1,Type=Integer,"
+            'Description="SvPhaser: HP=2 supporting reads">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_NOHP,Number=1,Type=Integer,"
+            'Description="SvPhaser: supporting reads without HP tag">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_SUPPORT,Number=1,Type=Integer,"
+            'Description="SvPhaser: total supporting reads (HP1+HP2+NO_HP)">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_TAGGED,Number=1,Type=Integer,"
+            'Description="SvPhaser: supporting reads with HP tag (HP1+HP2)">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_TAGFRAC,Number=1,Type=Float,"
+            'Description="SvPhaser: fraction of supporting reads that are HP-tagged">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_DELTA,Number=1,Type=Float,"
+            'Description="SvPhaser: |HP1-HP2|/(HP1+HP2) on tagged support">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_REASON,Number=1,Type=String,"
+            'Description="SvPhaser: decision reason code">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_FETCHW,Number=1,Type=Integer,"
+            'Description="SvPhaser: fetch window (bp) used around breakpoints">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_BPWIN,Number=1,Type=Integer,"
+            'Description="SvPhaser: breakpoint tolerance window (bp) used in evidence checks">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_RNAMES_TOTAL,Number=1,Type=Integer,"
+            'Description="SvPhaser: RNAMES count in input VCF (if present)">\n'
+        )
+        out.write(
+            "##INFO=<ID=SVP_RNAMES_FOUND,Number=1,Type=Integer,"
+            'Description="SvPhaser: RNAMES found in BAM fetch window">\n'
+        )
+
     out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
 
 
-def _compose_info_str(orig_info: dict[str, Any], svtype: Any, gq_label: Any) -> str:
-    """Compose INFO with SVTYPE first, proper FLAG handling, then GQBIN."""
+def _compose_info_str(
+    orig_info: dict[str, Any],
+    svtype: Any,
+    gq_label: Any,
+    svp_fields: dict[str, Any] | None,
+) -> str:
+    """Compose INFO with SVTYPE first, proper FLAG handling, then SvPhaser fields."""
     items: list[str] = []
 
     if svtype:
@@ -276,6 +360,34 @@ def _compose_info_str(orig_info: dict[str, Any], svtype: Any, gq_label: Any) -> 
 
     if not _is_missing_scalar(gq_label):
         items.append(f"GQBIN={gq_label}")
+
+    if svp_fields:
+        # Stable order to keep VCF diffs readable.
+        order = [
+            "SVP_MODE",
+            "SVP_HP1",
+            "SVP_HP2",
+            "SVP_NOHP",
+            "SVP_SUPPORT",
+            "SVP_TAGGED",
+            "SVP_TAGFRAC",
+            "SVP_DELTA",
+            "SVP_REASON",
+            "SVP_FETCHW",
+            "SVP_BPWIN",
+            "SVP_RNAMES_TOTAL",
+            "SVP_RNAMES_FOUND",
+        ]
+        for k in order:
+            if k not in svp_fields:
+                continue
+            v = svp_fields[k]
+            if v is None:
+                continue
+            if isinstance(v, float):
+                items.append(f"{k}={v:.6g}")
+            else:
+                items.append(f"{k}={v}")
 
     return ";".join(items) if items else "."
 
@@ -318,12 +430,20 @@ def _write_phased_vcf(
     df: pd.DataFrame,
     *,
     gqbin_in_header: bool,
+    svp_info_in_header: bool,
+    svp_info: bool,
 ) -> None:
     """Write a phased VCF: tab-delimited, compliant, with ensured GT/GQ (and GQBIN if used)."""
     full_lookup, legacy_index, raw_header_lines, sample_name = _vcf_info_lookup(in_vcf)
 
     with open(out_vcf, "w", newline="") as out:
-        _write_headers(out, raw_header_lines, sample_name, gqbin_in_header=gqbin_in_header)
+        _write_headers(
+            out,
+            raw_header_lines,
+            sample_name,
+            gqbin_in_header=gqbin_in_header,
+            svp_info_in_header=svp_info_in_header,
+        )
 
         for row in df.itertuples(index=False):
             chrom = str(getattr(row, "chrom", "."))
@@ -351,7 +471,26 @@ def _write_phased_vcf(
                 logger.warning("Could not uniquely match VCF record for %s:%s %s", chrom, pos, vid)
                 continue
 
-            info_str = _compose_info_str(info["INFO"], svtype, gq_label)
+            svp_fields = None
+            if svp_info:
+                # Namespaced INFO annotations written by SvPhaser.
+                svp_fields = {
+                    "SVP_MODE": getattr(row, "mode", None),
+                    "SVP_HP1": int(getattr(row, "n1", 0) or 0),
+                    "SVP_HP2": int(getattr(row, "n2", 0) or 0),
+                    "SVP_NOHP": int(getattr(row, "nohp", 0) or 0),
+                    "SVP_SUPPORT": int(getattr(row, "support_total", 0) or 0),
+                    "SVP_TAGGED": int(getattr(row, "tagged_total", 0) or 0),
+                    "SVP_TAGFRAC": float(getattr(row, "tag_frac", 0.0) or 0.0),
+                    "SVP_DELTA": float(getattr(row, "delta", 0.0) or 0.0),
+                    "SVP_REASON": getattr(row, "reason", None),
+                    "SVP_FETCHW": int(getattr(row, "fetch_w", 0) or 0),
+                    "SVP_BPWIN": int(getattr(row, "bp_tol", getattr(row, "bp_window", 0)) or 0),
+                    "SVP_RNAMES_TOTAL": int(getattr(row, "rnames_total", 0) or 0),
+                    "SVP_RNAMES_FOUND": int(getattr(row, "rnames_found", 0) or 0),
+                }
+
+            info_str = _compose_info_str(info["INFO"], svtype, gq_label, svp_fields)
 
             fields = [
                 chrom,
