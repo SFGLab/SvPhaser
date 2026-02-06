@@ -43,7 +43,7 @@ def main(
             is_flag=True,
             callback=_version_callback,
         ),
-    ] = None
+    ] = None,
 ) -> None:
     """SvPhaser – Structural-variant phasing from HP-tagged long-read BAMs."""
     return
@@ -80,12 +80,23 @@ def phase_cmd(
         int,
         typer.Option(
             help=(
-                "Minimum TOTAL ALT-supporting reads required to keep an SV (n1+n2). "
-                "If (n1+n2) < min_support the SV is dropped (written to *_dropped_svs.csv)."
+                "Minimum TOTAL ALT-supporting reads required to keep an SV. "
+                "Support is counted as HP1+HP2+NO_HP among SV-supporting reads. "
+                "If support < min_support the SV is dropped (written to *_dropped_svs.csv)."
             ),
             show_default=True,
         ),
     ] = DEFAULT_MIN_SUPPORT,
+    min_tagged_support: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Minimum number of HP-tagged supporting reads required before attempting a "
+                "directional call (1|0 or 0|1). This is separate from --min-support."
+            ),
+            show_default=True,
+        ),
+    ] = 3,
     major_delta: Annotated[
         float,
         typer.Option(
@@ -96,10 +107,61 @@ def phase_cmd(
     equal_delta: Annotated[
         float,
         typer.Option(
-            help="|n1−n2|/N <= this ⇒ near-tie ⇒ GT ./. (ambiguous)",
+            help=(
+                "|n1−n2|/N <= this ⇒ near-tie. "
+                "With --tie-to-hom-alt this emits 1|1; otherwise it emits ./."
+            ),
             show_default=True,
         ),
     ] = DEFAULT_EQUAL_DELTA,
+    # ---------- support selection / windows -----------------------------
+    support_mode: Annotated[
+        str,
+        typer.Option(
+            "--support-mode",
+            help=(
+                "How to define the SV-supporting read set: "
+                "'hybrid' (use RNAMES if present, else heuristics), "
+                "'rnames' (require RNAMES), or 'heuristic' (ignore RNAMES)."
+            ),
+            show_default=True,
+        ),
+    ] = "hybrid",
+    bp_window: Annotated[
+        int,
+        typer.Option(
+            "--bp-window",
+            help=(
+                "Base breakpoint tolerance (bp) used for evidence matching. Dynamic mode "
+                "may expand it."
+            ),
+            show_default=True,
+        ),
+    ] = 100,
+    dynamic_window: Annotated[
+        bool,
+        typer.Option(
+            "--dynamic-window/--fixed-window",
+            help="Use dynamic fetch windows based on SVLEN and positional uncertainty.",
+            show_default=True,
+        ),
+    ] = True,
+    tie_to_hom_alt: Annotated[
+        bool,
+        typer.Option(
+            "--tie-to-hom-alt/--tie-to-ambig",
+            help="In the near-tie zone, emit 1|1 instead of ./. .",
+            show_default=True,
+        ),
+    ] = True,
+    svp_info: Annotated[
+        bool,
+        typer.Option(
+            "--svp-info/--no-svp-info",
+            help="Write SvPhaser INFO annotations (SVP_*) into the phased VCF.",
+            show_default=True,
+        ),
+    ] = True,
     # ---------- confidence bins ------------------------------------------
     gq_bins: Annotated[
         str,
@@ -147,9 +209,15 @@ def phase_cmd(
             bam,
             out_dir=out_dir,
             min_support=min_support,
+            min_tagged_support=min_tagged_support,
             major_delta=major_delta,
             equal_delta=equal_delta,
             gq_bins=gq_bins,
+            support_mode=support_mode,
+            bp_window=bp_window,
+            dynamic_window=dynamic_window,
+            tie_to_hom_alt=tie_to_hom_alt,
+            svp_info=svp_info,
             threads=threads,
         )
         typer.secho(f"✔ Phased VCF → {out_vcf}", fg=typer.colors.GREEN)
