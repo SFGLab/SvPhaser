@@ -484,7 +484,8 @@ def _phase_chrom_worker(
         tagged_total = int(sup["tagged_total"])
         support_total = int(sup["support_total"])
 
-        cls = classify_haplotype_v211(
+        # classify returns: (gt, gq, reason, delta)
+        gt, gq, reason, delta = classify_haplotype_v211(
             n1=hp1,
             n2=hp2,
             min_support=opts.min_support,
@@ -495,6 +496,8 @@ def _phase_chrom_worker(
             tie_to_hom_alt=opts.tie_to_hom_alt,
         )
 
+        tag_frac = (tagged_total / support_total) if support_total else 0.0
+
         row = {
             "chrom": chrom,
             "pos": int(rec.POS),
@@ -502,17 +505,30 @@ def _phase_chrom_worker(
             "svtype": str(sup.get("svtype", "NA")),
             "svlen": int(sup.get("svlen") or 0),
             "end": int(sup.get("sv_end") or rec.POS),
+            # carry ALT + input genotype for downstream/debugging
+            "alt": sup.get("alt"),
+            "in_gt": sup.get("in_gt"),
+            # evidence counts
             "hp1": hp1,
             "hp2": hp2,
             "nohp": nohp,
             "tagged_total": tagged_total,
             "support_total": support_total,
+            # aliases expected by VCF writer (n1/n2)
+            "n1": hp1,
+            "n2": hp2,
+            # classification outputs (previously missing -> caused GT=./.)
+            "gt": gt,
+            "gq": int(gq),
+            "reason": reason,
+            "delta": float(delta),
+            "tag_frac": float(tag_frac),
+            # provenance
             "mode": sup.get("mode"),
             "fetch_w": sup.get("fetch_w"),
             "bp_tol": sup.get("bp_tol"),
             "rnames_total": sup.get("rnames_total"),
             "rnames_found": sup.get("rnames_found"),
-            **(cls if isinstance(cls, dict) else {}),
         }
         rows.append(row)
 

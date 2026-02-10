@@ -1,16 +1,14 @@
 """svphaser.phasing.io
 ===================
+
 High-level “engine” – orchestrates per-chromosome workers, merges results,
 applies the global support filter, then writes CSV + VCF.
 
-Step B update (biological correctness):
-- `min_support` is interpreted as a *total ALT-support* threshold (n1+n2).
-  The filter drops an SV only if (n1+n2) < min_support.
-
-Step A fixes retained:
-- collision-resistant VCF record matching using (CHROM, POS, ID, END, ALT)
-- correct INFO composition (no duplicated keys; proper FLAG handling)
-- typing fixes to satisfy Pylance/Mypy
+Hardening patch (v2.1.3+):
+- FAIL LOUD if worker output is missing required phasing columns (gt/gq).
+- Backfill expected aliases (n1/n2, tag_frac) from hp1/hp2 + totals when possible.
+- Compute gq_label (GQBIN) from --gq-bins if missing.
+- Warn if output looks suspicious (e.g., 99% './.' despite high tagged support).
 """
 
 from __future__ import annotations
@@ -49,6 +47,119 @@ def _is_missing_scalar(x: Any) -> bool:
     if isinstance(x, str) and x.strip() == "":
         return True
     return False
+
+
+def _gq_label_from_bins(gq: Any, bins: list[GQBin]) -> str | None:
+    """Return label for first threshold satisfied (bins sorted desc)."""
+    if not bins:
+        return None
+    try:
+        gq_i = int(gq)
+    except Exception:
+        return None
+    for thr, lbl in bins:
+        if gq_i >= int(thr):
+            return str(lbl)
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Hardening: normalize worker output before writing
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _backfill_n1_n2(out: pd.DataFrame) -> None:
+    # n1/n2 are what the VCF writer uses (SVP_HP1/HP2).
+    if "n1" not in out.columns and "hp1" in out.columns:
+        out["n1"] = out["hp1"]
+    if "n2" not in out.columns and "hp2" in out.columns:
+        out["n2"] = out["hp2"]
+
+
+def _backfill_tag_frac(out: pd.DataFrame) -> None:
+    # tag_frac is used in SVP_TAGFRAC; derive if totals exist.
+    if "tag_frac" in out.columns:
+        return
+    if "tagged_total" not in out.columns or "support_total" not in out.columns:
+        return
+
+    denom = pd.to_numeric(out["support_total"], errors="coerce").astype(float)
+    denom = denom.where(denom != 0.0, other=float("nan"))
+    numer = pd.to_numeric(out["tagged_total"], errors="coerce").astype(float)
+    out["tag_frac"] = numer / denom
+
+
+def _backfill_gq_label(out: pd.DataFrame, *, bins: list[GQBin]) -> None:
+    # gq_label is optional but CLI advertises it; compute if missing and bins present.
+    if not bins:
+        return
+    if "gq_label" in out.columns:
+        return
+    if "gq" not in out.columns:
+        return
+    out["gq_label"] = out["gq"].apply(lambda x: _gq_label_from_bins(x, bins))
+
+
+def _validate_required_columns(out: pd.DataFrame) -> None:
+    required = ["chrom", "pos", "id", "end", "svtype", "gt", "gq"]
+    missing = [c for c in required if c not in out.columns]
+    if missing:
+        raise RuntimeError(
+            "SvPhaser internal error: worker output is missing required columns "
+            f"{missing}. Refusing to write phased VCF/CSV because it would silently "
+            "degrade to './.' genotypes. Fix worker to emit gt/gq "
+            "(and ideally reason/delta)."
+        )
+
+
+def _normalize_gt_gq(out: pd.DataFrame) -> None:
+    # Avoid pandas NA weirdness: make sure gt is present and string-like.
+    out["gt"] = out["gt"].fillna("./.").astype(str)
+
+    # Make sure gq is int-ish.
+    out["gq"] = pd.to_numeric(out["gq"], errors="coerce").fillna(0).astype(int)
+
+
+def _warn_if_suspicious(out: pd.DataFrame) -> None:
+    # If almost all GT are './.' but we clearly have tagged support, warn loudly.
+    if "tagged_total" not in out.columns:
+        return
+    try:
+        frac_ambig = float((out["gt"] == "./.").mean())
+        med_tagged = float(pd.to_numeric(out["tagged_total"], errors="coerce").fillna(0).median())
+        if frac_ambig >= 0.95 and med_tagged >= 5:
+            logger.warning(
+                "Suspicious output: %.1f%% genotypes are './.' despite "
+                "median tagged_total=%.1f. This usually indicates a gt/gq "
+                "propagation bug or thresholds too strict.",
+                100.0 * frac_ambig,
+                med_tagged,
+            )
+    except Exception:
+        return
+
+
+def _ensure_required_columns(df: pd.DataFrame, *, bins: list[GQBin]) -> pd.DataFrame:
+    """Backfill columns the writer expects; then validate."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    _backfill_n1_n2(out)
+    _backfill_tag_frac(out)
+    _backfill_gq_label(out, bins=bins)
+
+    _validate_required_columns(out)
+    _normalize_gt_gq(out)
+    _warn_if_suspicious(out)
+
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Public entrypoint
+# ──────────────────────────────────────────────────────────────────────
 
 
 def phase_vcf(
@@ -158,11 +269,20 @@ def phase_vcf(
             ]
         )
 
+    # Backfill + validate before any writing.
+    merged = _ensure_required_columns(merged, bins=bins)
+
     pre = len(merged)
     if "support_total" in merged.columns:
-        total_support = merged["support_total"].astype(int)
+        total_support = (
+            pd.to_numeric(merged["support_total"], errors="coerce").fillna(0).astype(int)
+        )
     else:
-        total_support = merged["n1"].astype(int) + merged["n2"].astype(int)
+        # Fallback: if support_total not present, treat tagged as total (legacy)
+        total_support = pd.to_numeric(merged["n1"], errors="coerce").fillna(0).astype(
+            int
+        ) + pd.to_numeric(merged["n2"], errors="coerce").fillna(0).astype(int)
+
     keep = total_support >= int(min_support)
 
     stem = sv_vcf.name.removesuffix(".vcf.gz").removesuffix(".vcf")
@@ -173,7 +293,8 @@ def phase_vcf(
     logger.info("Dropped SVs → %s (%d SVs)", dropped_csv, int((~keep).sum()))
 
     kept = merged.loc[keep].reset_index(drop=True)
-    if dropped := pre - len(kept):
+    dropped = pre - len(kept)
+    if dropped:
         logger.info("Support filter removed %d SVs", dropped)
 
     # 6 ─ Write CSV
@@ -276,8 +397,6 @@ def _write_headers(
             "##INFO=<ID=GQBIN,Number=1,Type=String," 'Description="GQ bin label from SvPhaser">\n'
         )
 
-    # SvPhaser INFO annotations (V2.1.1). Written by default so the VCF is
-    # self-describing in downstream tools.
     if svp_info_in_header and not have_svp_hp1:
         out.write(
             "##INFO=<ID=SVP_MODE,Number=1,Type=String,"
@@ -352,7 +471,6 @@ def _compose_info_str(
             continue
         if v is None:
             continue
-        # cyvcf2 represents INFO flags as boolean True
         if v is True:
             items.append(str(k))
         else:
@@ -362,7 +480,6 @@ def _compose_info_str(
         items.append(f"GQBIN={gq_label}")
 
     if svp_fields:
-        # Stable order to keep VCF diffs readable.
         order = [
             "SVP_MODE",
             "SVP_HP1",
@@ -420,7 +537,6 @@ def _select_info_record(
         if len(end_matches) == 1:
             return full_lookup[end_matches[0]]
 
-    # Still ambiguous: refuse to guess
     return None
 
 
@@ -473,7 +589,6 @@ def _write_phased_vcf(
 
             svp_fields = None
             if svp_info:
-                # Namespaced INFO annotations written by SvPhaser.
                 svp_fields = {
                     "SVP_MODE": getattr(row, "mode", None),
                     "SVP_HP1": int(getattr(row, "n1", 0) or 0),
