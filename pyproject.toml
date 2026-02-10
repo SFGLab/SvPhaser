@@ -87,7 +87,7 @@ version_scheme = "no-guess-dev"
 
 # Write resolved version to file at build time
 [tool.hatch.build.hooks.vcs]
-
+version-file = "src/svphaser/_version.py"
 # -------------------------------------------------------------------
 #  Tooling (ruff / black / mypy / pytest / coverage)
 # -------------------------------------------------------------------
