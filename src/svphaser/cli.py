@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """svphaser.cli
 ============
+
 Command-line interface for **SvPhaser**.
 
 The program writes two files inside **--out-dir** (or the CWD):
 
 * ``<stem>_phased.vcf``   (uncompressed; GT/GQ injected; optional INFO=GQBIN)
 * ``<stem>_phased.csv``   (tabular summary incl. n1/n2/gt/gq and optional gq_label)
+
+Patched to expose stricter DEL/INS size-consistency controls:
+- --size-match-required / --no-size-match-required
+- --size-tol-abs
+- --size-tol-frac
 """
 
 from __future__ import annotations
@@ -53,11 +59,17 @@ def main(
 def phase_cmd(
     sv_vcf: Annotated[
         Path,
-        typer.Argument(exists=True, help="Input *un-phased* SV VCF (.vcf or .vcf.gz)"),
+        typer.Argument(
+            exists=True,
+            help="Input *un-phased* SV VCF (.vcf or .vcf.gz)",
+        ),
     ],
     bam: Annotated[
         Path,
-        typer.Argument(exists=True, help="Long-read BAM/CRAM with HP tags"),
+        typer.Argument(
+            exists=True,
+            help="Long-read BAM/CRAM with HP tags",
+        ),
     ],
     out_dir: Annotated[
         Path,
@@ -82,7 +94,8 @@ def phase_cmd(
             help=(
                 "Minimum TOTAL ALT-supporting reads required to keep an SV. "
                 "Support is counted as HP1+HP2+NO_HP among SV-supporting reads. "
-                "If support < min_support the SV is dropped (written to *_dropped_svs.csv)."
+                "If support < min_support the SV is dropped "
+                "(written to *_dropped_svs.csv)."
             ),
             show_default=True,
         ),
@@ -91,8 +104,9 @@ def phase_cmd(
         int,
         typer.Option(
             help=(
-                "Minimum number of HP-tagged supporting reads required before attempting a "
-                "directional call (1|0 or 0|1). This is separate from --min-support."
+                "Minimum number of HP-tagged supporting reads required before "
+                "attempting a directional call (1|0 or 0|1). "
+                "This is separate from --min-support."
             ),
             show_default=True,
         ),
@@ -114,7 +128,7 @@ def phase_cmd(
             show_default=True,
         ),
     ] = DEFAULT_EQUAL_DELTA,
-    # ---------- support selection / windows -----------------------------
+    # ---------- support selection / windows -------------------------------
     support_mode: Annotated[
         str,
         typer.Option(
@@ -122,7 +136,8 @@ def phase_cmd(
             help=(
                 "How to define the SV-supporting read set: "
                 "'hybrid' (use RNAMES if present, else heuristics), "
-                "'rnames' (require RNAMES), or 'heuristic' (ignore RNAMES)."
+                "'rnames' (require RNAMES), or "
+                "'heuristic' (ignore RNAMES)."
             ),
             show_default=True,
         ),
@@ -132,8 +147,8 @@ def phase_cmd(
         typer.Option(
             "--bp-window",
             help=(
-                "Base breakpoint tolerance (bp) used for evidence matching. Dynamic mode "
-                "may expand it."
+                "Base breakpoint tolerance (bp) used for evidence matching. "
+                "Dynamic mode may expand it."
             ),
             show_default=True,
         ),
@@ -162,18 +177,57 @@ def phase_cmd(
             show_default=True,
         ),
     ] = True,
-    # ---------- confidence bins ------------------------------------------
+    # ---------- strict DEL/INS size matching ------------------------------
+    size_match_required: Annotated[
+        bool,
+        typer.Option(
+            "--size-match-required/--no-size-match-required",
+            help=(
+                "Require DEL/INS supporting evidence length to match expected "
+                "SVLEN within tolerance before counting it as ALT support."
+            ),
+            show_default=True,
+        ),
+    ] = True,
+    size_tol_abs: Annotated[
+        int,
+        typer.Option(
+            "--size-tol-abs",
+            min=0,
+            help=(
+                "Absolute tolerance in bp for DEL/INS size matching. "
+                "Example: with SVLEN=650 and --size-tol-abs 10, only support "
+                "in [640, 660] is accepted when --size-tol-frac=0."
+            ),
+            show_default=True,
+        ),
+    ] = 10,
+    size_tol_frac: Annotated[
+        float,
+        typer.Option(
+            "--size-tol-frac",
+            min=0.0,
+            help=(
+                "Relative tolerance fraction for DEL/INS size matching. "
+                "Final tolerance is max(size_tol_abs, round(size_tol_frac * SVLEN))."
+            ),
+            show_default=True,
+        ),
+    ] = 0.0,
+    # ---------- confidence bins -------------------------------------------
     gq_bins: Annotated[
         str,
         typer.Option(
             help=(
-                "Comma-separated GQ≥threshold:Label definitions (e.g. '30:High,10:Moderate'). "
-                "Labels appear in CSV column [gq_label] and in the VCF INFO field GQBIN."
+                "Comma-separated GQ≥threshold:Label definitions "
+                "(e.g. '30:High,10:Moderate'). "
+                "Labels appear in CSV column [gq_label] and in the VCF INFO "
+                "field GQBIN."
             ),
             show_default=True,
         ),
     ] = DEFAULT_GQ_BINS,
-    # ---------- multiprocessing ------------------------------------------
+    # ---------- multiprocessing -------------------------------------------
     threads: Annotated[
         int | None,
         typer.Option(
@@ -188,6 +242,19 @@ def phase_cmd(
     from svphaser.logging import init as _init_logging
 
     _init_logging("INFO")
+
+    # Fail fast on invalid support mode instead of letting it drift downstream.
+    valid_support_modes = {"hybrid", "rnames", "heuristic"}
+    if support_mode not in valid_support_modes:
+        raise typer.BadParameter(
+            f"--support-mode must be one of {sorted(valid_support_modes)}, "
+            f"got '{support_mode}'."
+        )
+
+    if size_tol_abs < 0:
+        raise typer.BadParameter("--size-tol-abs must be >= 0.")
+    if size_tol_frac < 0:
+        raise typer.BadParameter("--size-tol-frac must be >= 0.")
 
     if not out_dir.exists():
         out_dir.mkdir(parents=True)
@@ -219,6 +286,9 @@ def phase_cmd(
             tie_to_hom_alt=tie_to_hom_alt,
             svp_info=svp_info,
             threads=threads,
+            size_match_required=size_match_required,
+            size_tol_abs=size_tol_abs,
+            size_tol_frac=size_tol_frac,
         )
         typer.secho(f"✔ Phased VCF → {out_vcf}", fg=typer.colors.GREEN)
         typer.secho(f"✔ Phased CSV → {out_csv}", fg=typer.colors.GREEN)

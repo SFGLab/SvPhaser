@@ -1,14 +1,16 @@
 """svphaser.phasing.io
 ===================
 
-High-level “engine” – orchestrates per-chromosome workers, merges results,
-applies the global support filter, then writes CSV + VCF.
+High-level engine:
+- orchestrates per-chromosome workers
+- merges results
+- applies the global support filter
+- writes CSV + phased VCF
 
-Hardening patch (v2.1.3+):
-- FAIL LOUD if worker output is missing required phasing columns (gt/gq).
-- Backfill expected aliases (n1/n2, tag_frac) from hp1/hp2 + totals when possible.
-- Compute gq_label (GQBIN) from --gq-bins if missing.
-- Warn if output looks suspicious (e.g., 99% './.' despite high tagged support).
+Patched for stricter DEL/INS evidence plumbing:
+- passes size-consistency options into WorkerOpts
+- preserves previous hardening around gt/gq propagation
+- writes richer SvPhaser INFO annotations
 """
 
 from __future__ import annotations
@@ -63,13 +65,8 @@ def _gq_label_from_bins(gq: Any, bins: list[GQBin]) -> str | None:
     return None
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  Hardening: normalize worker output before writing
-# ──────────────────────────────────────────────────────────────────────
-
-
 def _backfill_n1_n2(out: pd.DataFrame) -> None:
-    # n1/n2 are what the VCF writer uses (SVP_HP1/HP2).
+    """n1/n2 are what the VCF writer uses (SVP_HP1/HP2)."""
     if "n1" not in out.columns and "hp1" in out.columns:
         out["n1"] = out["hp1"]
     if "n2" not in out.columns and "hp2" in out.columns:
@@ -77,7 +74,7 @@ def _backfill_n1_n2(out: pd.DataFrame) -> None:
 
 
 def _backfill_tag_frac(out: pd.DataFrame) -> None:
-    # tag_frac is used in SVP_TAGFRAC; derive if totals exist.
+    """tag_frac is used in SVP_TAGFRAC; derive if totals exist."""
     if "tag_frac" in out.columns:
         return
     if "tagged_total" not in out.columns or "support_total" not in out.columns:
@@ -90,7 +87,7 @@ def _backfill_tag_frac(out: pd.DataFrame) -> None:
 
 
 def _backfill_gq_label(out: pd.DataFrame, *, bins: list[GQBin]) -> None:
-    # gq_label is optional but CLI advertises it; compute if missing and bins present.
+    """gq_label is optional but CLI advertises it; compute if missing."""
     if not bins:
         return
     if "gq_label" in out.columns:
@@ -113,15 +110,13 @@ def _validate_required_columns(out: pd.DataFrame) -> None:
 
 
 def _normalize_gt_gq(out: pd.DataFrame) -> None:
-    # Avoid pandas NA weirdness: make sure gt is present and string-like.
+    """Normalize GT/GQ to safe writable types."""
     out["gt"] = out["gt"].fillna("./.").astype(str)
-
-    # Make sure gq is int-ish.
     out["gq"] = pd.to_numeric(out["gq"], errors="coerce").fillna(0).astype(int)
 
 
 def _warn_if_suspicious(out: pd.DataFrame) -> None:
-    # If almost all GT are './.' but we clearly have tagged support, warn loudly.
+    """Warn loudly if output looks obviously wrong."""
     if "tagged_total" not in out.columns:
         return
     try:
@@ -157,11 +152,6 @@ def _ensure_required_columns(df: pd.DataFrame, *, bins: list[GQBin]) -> pd.DataF
     return out
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  Public entrypoint
-# ──────────────────────────────────────────────────────────────────────
-
-
 def phase_vcf(
     sv_vcf: Path,
     bam: Path,
@@ -178,6 +168,9 @@ def phase_vcf(
     tie_to_hom_alt: bool = True,
     svp_info: bool = True,
     threads: int | None = None,
+    size_match_required: bool = True,
+    size_tol_abs: int = 10,
+    size_tol_frac: float = 0.0,
 ) -> None:
     """Phase *sv_vcf* against *bam* and write outputs to *out_dir*.
 
@@ -188,7 +181,6 @@ def phase_vcf(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1 ─ Parse --gq-bins → list[(int,label)]
     bins: list[GQBin] = []
     if gq_bins.strip():
         for part in gq_bins.split(","):
@@ -199,30 +191,30 @@ def phase_vcf(
                 thr_s, lbl = thr_lbl.split(":")
             except ValueError as err:
                 raise ValueError(
-                    f"Invalid gq-bin specifier: '{thr_lbl}'. Use '30:High,10:Moderate'."
+                    f"Invalid gq-bin specifier: '{thr_lbl}'. " "Use '30:High,10:Moderate'."
                 ) from err
             bins.append((int(thr_s), lbl))
         bins.sort(key=lambda x: x[0], reverse=True)
 
-    # 2 ─ Build immutable options holder for workers
     opts = WorkerOpts(
         min_support=min_support,
         min_tagged_support=min_tagged_support,
         major_delta=major_delta,
         equal_delta=equal_delta,
-        gq_bins=bins,
+        tie_to_hom_alt=tie_to_hom_alt,
         support_mode=support_mode,
         bp_window=bp_window,
         dynamic_window=dynamic_window,
-        tie_to_hom_alt=tie_to_hom_alt,
+        size_match_required=size_match_required,
+        size_tol_abs=size_tol_abs,
+        size_tol_frac=size_tol_frac,
+        gq_bins=bins,
     )
 
-    # 3 ─ Discover chromosomes (cheap – no variants parsed yet)
     rdr = Reader(str(sv_vcf))
     chroms: tuple[str, ...] = tuple(rdr.seqnames)
     rdr.close()
 
-    # 4 ─ Launch one worker per chromosome (or ≤threads)
     worker_args: list[tuple[str, Path, Path, WorkerOpts]] = [(c, sv_vcf, bam, opts) for c in chroms]
 
     threads = threads or mp.cpu_count() or 1
@@ -230,7 +222,6 @@ def phase_vcf(
 
     dataframes: list[pd.DataFrame] = []
 
-    # Use 'fork' when available (fast on Linux); fall back to 'spawn' elsewhere.
     try:
         ctx = mp.get_context("fork")
     except ValueError:
@@ -249,7 +240,6 @@ def phase_vcf(
                 chrom = df.iloc[0]["chrom"] if not df.empty else "?"
                 logger.info("chr %-6s ✔ phased %5d SVs", chrom, len(df))
 
-    # 5 ─ Merge & apply *global* support filter (Step B: total ALT-support)
     if dataframes:
         merged = pd.concat(dataframes, ignore_index=True)
     else:
@@ -269,7 +259,6 @@ def phase_vcf(
             ]
         )
 
-    # Backfill + validate before any writing.
     merged = _ensure_required_columns(merged, bins=bins)
 
     pre = len(merged)
@@ -278,7 +267,6 @@ def phase_vcf(
             pd.to_numeric(merged["support_total"], errors="coerce").fillna(0).astype(int)
         )
     else:
-        # Fallback: if support_total not present, treat tagged as total (legacy)
         total_support = pd.to_numeric(merged["n1"], errors="coerce").fillna(0).astype(
             int
         ) + pd.to_numeric(merged["n2"], errors="coerce").fillna(0).astype(int)
@@ -287,7 +275,6 @@ def phase_vcf(
 
     stem = sv_vcf.name.removesuffix(".vcf.gz").removesuffix(".vcf")
 
-    # Save dropped SVs for transparency
     dropped_csv = out_dir / f"{stem}_dropped_svs.csv"
     merged.loc[~keep].to_csv(dropped_csv, index=False)
     logger.info("Dropped SVs → %s (%d SVs)", dropped_csv, int((~keep).sum()))
@@ -297,12 +284,10 @@ def phase_vcf(
     if dropped:
         logger.info("Support filter removed %d SVs", dropped)
 
-    # 6 ─ Write CSV
     out_csv = out_dir / f"{stem}_phased.csv"
     kept.to_csv(out_csv, index=False)
-    logger.info("CSV → %s  (%d SVs)", out_csv, len(kept))
+    logger.info("CSV → %s (%d SVs)", out_csv, len(kept))
 
-    # 7 ─ Write VCF
     out_vcf = out_dir / f"{stem}_phased.vcf"
     _write_phased_vcf(
         out_vcf,
@@ -315,22 +300,10 @@ def phase_vcf(
     logger.info("VCF → %s", out_vcf)
 
 
-# ──────────────────────────────────────────────────────────────────────
-#  Small helpers to keep complexity down
-# ──────────────────────────────────────────────────────────────────────
-
-
 def _vcf_info_lookup(
     in_vcf: Path,
 ) -> tuple[dict[SVKey, VcfRec], dict[SVKeyLegacy, list[SVKey]], list[str], str]:
-    """Scan input VCF once.
-
-    Returns:
-      - full_lookup: maps (CHROM, POS, ID, END, ALT) -> record components
-      - legacy_index: maps (CHROM, POS, ID) -> list of full keys (fallback)
-      - raw_header_lines
-      - sample_name
-    """
+    """Scan input VCF once."""
     rdr = Reader(str(in_vcf))
     raw_header_lines = rdr.raw_header.strip().splitlines()
     sample_name = rdr.samples[0] if rdr.samples else "SAMPLE"
@@ -376,7 +349,7 @@ def _write_headers(
     gqbin_in_header: bool,
     svp_info_in_header: bool,
 ) -> None:
-    """Write preserved meta headers + ensure GT/GQ/GQBIN, then the column header."""
+    """Write preserved meta headers + ensure GT/GQ/GQBIN, then column header."""
     have_gt = any("##FORMAT=<ID=GT" in ln for ln in raw_header_lines)
     have_gq = any("##FORMAT=<ID=GQ" in ln for ln in raw_header_lines)
     have_gqbin = any("##INFO=<ID=GQBIN" in ln for ln in raw_header_lines)
@@ -398,58 +371,59 @@ def _write_headers(
         )
 
     if svp_info_in_header and not have_svp_hp1:
-        out.write(
-            "##INFO=<ID=SVP_MODE,Number=1,Type=String,"
-            'Description="SvPhaser: evidence mode used (RNAMES/HEURISTIC)">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_HP1,Number=1,Type=Integer,"
-            'Description="SvPhaser: HP=1 supporting reads">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_HP2,Number=1,Type=Integer,"
-            'Description="SvPhaser: HP=2 supporting reads">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_NOHP,Number=1,Type=Integer,"
-            'Description="SvPhaser: supporting reads without HP tag">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_SUPPORT,Number=1,Type=Integer,"
-            'Description="SvPhaser: total supporting reads (HP1+HP2+NO_HP)">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_TAGGED,Number=1,Type=Integer,"
-            'Description="SvPhaser: supporting reads with HP tag (HP1+HP2)">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_TAGFRAC,Number=1,Type=Float,"
-            'Description="SvPhaser: fraction of supporting reads that are HP-tagged">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_DELTA,Number=1,Type=Float,"
-            'Description="SvPhaser: |HP1-HP2|/(HP1+HP2) on tagged support">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_REASON,Number=1,Type=String,"
-            'Description="SvPhaser: decision reason code">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_FETCHW,Number=1,Type=Integer,"
-            'Description="SvPhaser: fetch window (bp) used around breakpoints">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_BPWIN,Number=1,Type=Integer,"
-            'Description="SvPhaser: breakpoint tolerance window (bp) used in evidence checks">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_RNAMES_TOTAL,Number=1,Type=Integer,"
-            'Description="SvPhaser: RNAMES count in input VCF (if present)">\n'
-        )
-        out.write(
-            "##INFO=<ID=SVP_RNAMES_FOUND,Number=1,Type=Integer,"
-            'Description="SvPhaser: RNAMES found in BAM fetch window">\n'
-        )
+        info_lines = [
+            (
+                "SVP_MODE",
+                "String",
+                "SvPhaser: evidence mode used " "(RNAMES_VALIDATED/HEURISTIC/RNAMES)",
+            ),
+            ("SVP_HP1", "Integer", "SvPhaser: HP=1 supporting reads"),
+            ("SVP_HP2", "Integer", "SvPhaser: HP=2 supporting reads"),
+            ("SVP_NOHP", "Integer", "SvPhaser: supporting reads without HP tag"),
+            (
+                "SVP_SUPPORT",
+                "Integer",
+                "SvPhaser: total supporting reads (HP1+HP2+NO_HP)",
+            ),
+            (
+                "SVP_TAGGED",
+                "Integer",
+                "SvPhaser: supporting reads with HP tag (HP1+HP2)",
+            ),
+            (
+                "SVP_TAGFRAC",
+                "Float",
+                "SvPhaser: fraction of supporting reads that are HP-tagged",
+            ),
+            (
+                "SVP_DELTA",
+                "Float",
+                "SvPhaser: |HP1-HP2|/(HP1+HP2) on tagged support",
+            ),
+            ("SVP_REASON", "String", "SvPhaser: decision reason code"),
+            (
+                "SVP_FETCHW",
+                "Integer",
+                "SvPhaser: fetch window (bp) used around breakpoints",
+            ),
+            (
+                "SVP_BPWIN",
+                "Integer",
+                "SvPhaser: breakpoint tolerance window (bp) " "used in evidence checks",
+            ),
+            (
+                "SVP_RNAMES_TOTAL",
+                "Integer",
+                "SvPhaser: RNAMES count in input VCF (if present)",
+            ),
+            (
+                "SVP_RNAMES_FOUND",
+                "Integer",
+                "SvPhaser: RNAMES found in BAM fetch window",
+            ),
+        ]
+        for info_id, info_type, desc in info_lines:
+            out.write(f"##INFO=<ID={info_id},Number=1,Type={info_type}," f'Description="{desc}">\n')
 
     out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
 
@@ -549,7 +523,7 @@ def _write_phased_vcf(
     svp_info_in_header: bool,
     svp_info: bool,
 ) -> None:
-    """Write a phased VCF: tab-delimited, compliant, with ensured GT/GQ (and GQBIN if used)."""
+    """Write a phased VCF with ensured GT/GQ and optional SvPhaser INFO."""
     full_lookup, legacy_index, raw_header_lines, sample_name = _vcf_info_lookup(in_vcf)
 
     with open(out_vcf, "w", newline="") as out:
@@ -584,7 +558,12 @@ def _write_phased_vcf(
                 alt=str(alt) if alt is not None else None,
             )
             if info is None:
-                logger.warning("Could not uniquely match VCF record for %s:%s %s", chrom, pos, vid)
+                logger.warning(
+                    "Could not uniquely match VCF record for %s:%s %s",
+                    chrom,
+                    pos,
+                    vid,
+                )
                 continue
 
             svp_fields = None
