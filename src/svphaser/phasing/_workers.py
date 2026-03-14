@@ -2,17 +2,11 @@
 =========================
 Worker-process code.
 
-Step B update (biological correctness):
-- `n1/n2` are now *ALT-supporting read counts* per haplotype,
-  not raw overlap/coverage.
-- Evidence is SV-type-aware:
-  - DEL: large CIGAR 'D' spanning breakpoints (and optional split-read via SA)
-  - INS: large CIGAR 'I' near POS
-  - BND: split-read via SA linking to partner chrom:pos
-  - INV: split-read via SA to the END breakpoint with strand flip
-
-This is designed to match what IGV "SV-support" reads typically show,
-so counts will be closer to the 5/8 style numbers you observed (instead of 27/30).
+Patched for stricter DEL/INS evidence:
+- DEL/INS support can require size-consistency with expected SVLEN.
+- RNAMES mode is no longer trusted blindly; listed reads are re-validated
+  against actual alignment evidence before counting HP1/HP2 support.
+- BND/INV logic stays breakpoint/SA-based.
 """
 
 from __future__ import annotations
@@ -75,6 +69,24 @@ def _max_abs_int(x: Any) -> int:
 
 def _ins_support_min_len(svlen: int) -> int:
     return max(MIN_CIGAR_BP, min(int(MIN_CIGAR_FRACTION * max(svlen, 1)), 200))
+
+
+def _size_tolerance(expected_len: int, *, abs_tol: int, frac_tol: float) -> int:
+    expected_len = max(1, int(abs(expected_len)))
+    return max(int(abs_tol), int(round(frac_tol * expected_len)))
+
+
+def _len_matches_expected(
+    observed_len: int,
+    expected_len: int,
+    *,
+    abs_tol: int,
+    frac_tol: float,
+) -> bool:
+    observed_len = int(abs(observed_len))
+    expected_len = int(abs(expected_len))
+    tol = _size_tolerance(expected_len, abs_tol=abs_tol, frac_tol=frac_tol)
+    return abs(observed_len - expected_len) <= tol
 
 
 def _parse_rnames(val: Any) -> set[str]:
@@ -164,6 +176,34 @@ def _iter_candidate_reads(
             yield read
 
 
+def _del_event_matches(
+    *,
+    del_start: int,
+    del_end: int,
+    del_len: int,
+    pos0: int,
+    end_excl0: int,
+    svlen: int,
+    bp_window: int,
+    size_match_required: bool,
+    size_tol_abs: int,
+    size_tol_frac: float,
+) -> bool:
+    near_bp = abs(del_start - pos0) <= bp_window and abs(del_end - end_excl0) <= bp_window
+    if not near_bp:
+        return False
+
+    if size_match_required and not _len_matches_expected(
+        del_len,
+        svlen,
+        abs_tol=size_tol_abs,
+        frac_tol=size_tol_frac,
+    ):
+        return False
+
+    return True
+
+
 def _supports_del(
     read: pysam.AlignedSegment,
     *,
@@ -171,6 +211,9 @@ def _supports_del(
     end_excl0: int,
     svlen: int,
     bp_window: int,
+    size_match_required: bool,
+    size_tol_abs: int,
+    size_tol_frac: float,
 ) -> bool:
     if read.cigartuples is None:
         return False
@@ -181,22 +224,38 @@ def _supports_del(
     for op, length in read.cigartuples:
         if op in (0, 7, 8):
             ref += length
-        elif op in (2, 3):
+            continue
+
+        if op in (2, 3):
             if op == 2 and length >= min_len:
                 del_start = ref
                 del_end = ref + length
-                if abs(del_start - pos0) <= bp_window and abs(del_end - end_excl0) <= bp_window:
+                if _del_event_matches(
+                    del_start=del_start,
+                    del_end=del_end,
+                    del_len=length,
+                    pos0=pos0,
+                    end_excl0=end_excl0,
+                    svlen=svlen,
+                    bp_window=bp_window,
+                    size_match_required=size_match_required,
+                    size_tol_abs=size_tol_abs,
+                    size_tol_frac=size_tol_frac,
+                ):
                     return True
             ref += length
-        elif op in (1, 4, 5, 6):
             continue
 
-    for rname, sa_pos1, _strand in _parse_sa_tag(read):
-        if rname != read.reference_name:
+        if op in (1, 4, 5, 6):
             continue
-        sa_pos0 = sa_pos1 - 1
-        if abs(sa_pos0 - (end_excl0 - 1)) <= bp_window:
-            return True
+
+    if not size_match_required:
+        for rname, sa_pos1, _strand in _parse_sa_tag(read):
+            if rname != read.reference_name:
+                continue
+            sa_pos0 = sa_pos1 - 1
+            if abs(sa_pos0 - (end_excl0 - 1)) <= bp_window:
+                return True
 
     return False
 
@@ -207,6 +266,9 @@ def _supports_ins(
     pos0: int,
     svlen: int,
     bp_window: int,
+    size_match_required: bool,
+    size_tol_abs: int,
+    size_tol_frac: float,
 ) -> bool:
     if read.cigartuples is None:
         return False
@@ -219,9 +281,23 @@ def _supports_ins(
             ref += length
         elif op == 1:
             if length >= min_len and abs(ref - pos0) <= bp_window:
+                if size_match_required and not _len_matches_expected(
+                    length,
+                    svlen,
+                    abs_tol=size_tol_abs,
+                    frac_tol=size_tol_frac,
+                ):
+                    continue
                 return True
         elif op in (4, 5):
             if length >= min_len and abs(ref - pos0) <= bp_window:
+                if size_match_required and not _len_matches_expected(
+                    length,
+                    svlen,
+                    abs_tol=size_tol_abs,
+                    frac_tol=size_tol_frac,
+                ):
+                    continue
                 return True
         elif op in (2, 3):
             ref += length
@@ -278,11 +354,31 @@ def _read_supports_variant(
     bp_window: int,
     chr2: str | None = None,
     pos2: int | None = None,
+    size_match_required: bool = True,
+    size_tol_abs: int = 10,
+    size_tol_frac: float = 0.0,
 ) -> bool:
     if svtype == "DEL":
-        return _supports_del(read, pos0=pos0, end_excl0=end_excl0, svlen=svlen, bp_window=bp_window)
+        return _supports_del(
+            read,
+            pos0=pos0,
+            end_excl0=end_excl0,
+            svlen=svlen,
+            bp_window=bp_window,
+            size_match_required=size_match_required,
+            size_tol_abs=size_tol_abs,
+            size_tol_frac=size_tol_frac,
+        )
     if svtype == "INS":
-        return _supports_ins(read, pos0=pos0, svlen=svlen, bp_window=bp_window)
+        return _supports_ins(
+            read,
+            pos0=pos0,
+            svlen=svlen,
+            bp_window=bp_window,
+            size_match_required=size_match_required,
+            size_tol_abs=size_tol_abs,
+            size_tol_frac=size_tol_frac,
+        )
     if svtype == "BND" and chr2 and pos2:
         return _supports_bnd(
             read, pos0=pos0, chr2=str(chr2), pos2_1based=int(pos2), bp_window=bp_window
@@ -290,8 +386,23 @@ def _read_supports_variant(
     if svtype == "INV":
         return _supports_inv(read, pos0=pos0, end0=(end_excl0 - 1), bp_window=bp_window)
 
-    return _supports_ins(read, pos0=pos0, svlen=svlen, bp_window=bp_window) or _supports_del(
-        read, pos0=pos0, end_excl0=end_excl0, svlen=svlen, bp_window=bp_window
+    return _supports_ins(
+        read,
+        pos0=pos0,
+        svlen=svlen,
+        bp_window=bp_window,
+        size_match_required=size_match_required,
+        size_tol_abs=size_tol_abs,
+        size_tol_frac=size_tol_frac,
+    ) or _supports_del(
+        read,
+        pos0=pos0,
+        end_excl0=end_excl0,
+        svlen=svlen,
+        bp_window=bp_window,
+        size_match_required=size_match_required,
+        size_tol_abs=size_tol_abs,
+        size_tol_frac=size_tol_frac,
     )
 
 
@@ -341,12 +452,34 @@ def _count_hp_sv_support(  # noqa: C901
             qn = read.query_name
             if not qn or qn not in rset:
                 continue
-            st = state.setdefault(qn, {"hp": None})
+
+            st = state.setdefault(qn, {"hp": None, "support": False})
+
             if st["hp"] is None and read.has_tag("HP"):
                 st["hp"] = read.get_tag("HP")
 
+            if st["support"]:
+                continue
+
+            if _read_supports_variant(
+                read,
+                svtype,
+                pos0=pos0,
+                end_excl0=end_excl0,
+                svlen=svlen,
+                bp_window=bp_tol,
+                chr2=chr2,
+                pos2=pos2,
+                size_match_required=opts.size_match_required,
+                size_tol_abs=opts.size_tol_abs,
+                size_tol_frac=opts.size_tol_frac,
+            ):
+                st["support"] = True
+
         hp1 = hp2 = nohp = 0
-        for _qn, st in state.items():
+        for st in state.values():
+            if not st["support"]:
+                continue
             hp = st.get("hp")
             if hp == 1:
                 hp1 += 1
@@ -368,7 +501,7 @@ def _count_hp_sv_support(  # noqa: C901
             "alt": alt,
             "svtype": svtype,
             "svlen": svlen,
-            "mode": "RNAMES",
+            "mode": "RNAMES_VALIDATED",
             "fetch_w": fetch_w,
             "bp_tol": bp_tol,
             "rnames_total": len(rset),
@@ -422,6 +555,9 @@ def _count_hp_sv_support(  # noqa: C901
             bp_window=bp_tol,
             chr2=chr2,
             pos2=pos2,
+            size_match_required=opts.size_match_required,
+            size_tol_abs=opts.size_tol_abs,
+            size_tol_frac=opts.size_tol_frac,
         ):
             st["support"] = True
 
@@ -484,7 +620,7 @@ def _phase_chrom_worker(
         tagged_total = int(sup["tagged_total"])
         support_total = int(sup["support_total"])
 
-        cls = classify_haplotype_v211(
+        gt, gq, reason, delta = classify_haplotype_v211(
             n1=hp1,
             n2=hp2,
             min_support=opts.min_support,
@@ -495,6 +631,8 @@ def _phase_chrom_worker(
             tie_to_hom_alt=opts.tie_to_hom_alt,
         )
 
+        tag_frac = (tagged_total / support_total) if support_total else 0.0
+
         row = {
             "chrom": chrom,
             "pos": int(rec.POS),
@@ -502,17 +640,25 @@ def _phase_chrom_worker(
             "svtype": str(sup.get("svtype", "NA")),
             "svlen": int(sup.get("svlen") or 0),
             "end": int(sup.get("sv_end") or rec.POS),
+            "alt": sup.get("alt"),
+            "in_gt": sup.get("in_gt"),
             "hp1": hp1,
             "hp2": hp2,
             "nohp": nohp,
             "tagged_total": tagged_total,
             "support_total": support_total,
+            "n1": hp1,
+            "n2": hp2,
+            "gt": gt,
+            "gq": int(gq),
+            "reason": reason,
+            "delta": float(delta),
+            "tag_frac": float(tag_frac),
             "mode": sup.get("mode"),
             "fetch_w": sup.get("fetch_w"),
             "bp_tol": sup.get("bp_tol"),
             "rnames_total": sup.get("rnames_total"),
             "rnames_found": sup.get("rnames_found"),
-            **(cls if isinstance(cls, dict) else {}),
         }
         rows.append(row)
 
