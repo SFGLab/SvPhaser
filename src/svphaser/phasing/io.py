@@ -428,6 +428,22 @@ def _write_headers(
     out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample_name + "\n")
 
 
+def _vcf_safe_value(v: Any) -> str:
+    """Serialize a Python value into a VCF-compliant INFO value string.
+
+    Handles tuples, lists, numpy arrays, floats, and scalars.
+    Sequences are joined with commas (no spaces, no brackets).
+    """
+    if isinstance(v, (tuple, list)):
+        return ",".join(_vcf_safe_value(x) for x in v)
+    # numpy arrays
+    if hasattr(v, "tolist"):
+        return ",".join(_vcf_safe_value(x) for x in v.tolist())
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
 def _compose_info_str(
     orig_info: dict[str, Any],
     svtype: Any,
@@ -448,7 +464,7 @@ def _compose_info_str(
         if v is True:
             items.append(str(k))
         else:
-            items.append(f"{k}={v}")
+            items.append(f"{k}={_vcf_safe_value(v)}")
 
     if not _is_missing_scalar(gq_label):
         items.append(f"GQBIN={gq_label}")

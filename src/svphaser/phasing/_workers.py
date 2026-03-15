@@ -11,6 +11,9 @@ Patched for stricter DEL/INS evidence:
 
 from __future__ import annotations
 
+import csv
+import logging
+import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -289,7 +292,7 @@ def _supports_ins(
                 ):
                     continue
                 return True
-        elif op in (4, 5):
+        elif op == 4:  # soft-clip only; op 5 (hard-clip) excluded — no sequence data
             if length >= min_len and abs(ref - pos0) <= bp_window:
                 if size_match_required and not _len_matches_expected(
                     length,
@@ -301,6 +304,7 @@ def _supports_ins(
                 return True
         elif op in (2, 3):
             ref += length
+        # op 5 (hard-clip) and op 6 (padding) are silently skipped
     return False
 
 
@@ -406,12 +410,16 @@ def _read_supports_variant(
     )
 
 
+_debug_logger = logging.getLogger(__name__ + ".debug")
+
+
 def _count_hp_sv_support(  # noqa: C901
     bam: pysam.AlignmentFile,
     chrom: str,
     rec: Variant,
     *,
     opts: WorkerOpts,
+    debug_locus: str | None = None,
 ) -> dict[str, Any]:
     pos1 = int(rec.POS)
     sv_end = int(rec.end) if getattr(rec, "end", None) is not None else pos1
@@ -490,6 +498,20 @@ def _count_hp_sv_support(  # noqa: C901
 
         tagged_total = hp1 + hp2
         support_total = hp1 + hp2 + nohp
+
+        # --- Optional per-read debug dump ---
+        vid = rec.ID or "."
+        if debug_locus and vid == debug_locus:
+            _dump_debug_tsv(
+                vid,
+                state,
+                rset,
+                svtype,
+                svlen,
+                pos0,
+                bp_tol,
+                mode="RNAMES_VALIDATED",
+            )
 
         return {
             "hp1": hp1,
@@ -576,6 +598,20 @@ def _count_hp_sv_support(  # noqa: C901
     tagged_total = hp1 + hp2
     support_total = hp1 + hp2 + nohp
 
+    # --- Optional per-read debug dump ---
+    vid = rec.ID or "."
+    if debug_locus and vid == debug_locus:
+        _dump_debug_tsv(
+            vid,
+            state,
+            set(),
+            svtype,
+            svlen,
+            pos0,
+            bp_tol,
+            mode="HEURISTIC",
+        )
+
     return {
         "hp1": hp1,
         "hp2": hp2,
@@ -604,6 +640,8 @@ def _phase_chrom_worker(
     bam = pysam.AlignmentFile(str(bam_path), "rb")
     rdr = Reader(str(vcf_path))
 
+    debug_locus = os.environ.get("SVPHASER_DEBUG_LOCUS")
+
     rows: list[dict[str, object]] = []
 
     use_region_iter = _has_tabix_index(vcf_path)
@@ -613,7 +651,7 @@ def _phase_chrom_worker(
         if rec.CHROM != chrom:
             continue
 
-        sup = _count_hp_sv_support(bam, chrom, rec, opts=opts)
+        sup = _count_hp_sv_support(bam, chrom, rec, opts=opts, debug_locus=debug_locus)
         hp1 = int(sup["hp1"])
         hp2 = int(sup["hp2"])
         nohp = int(sup["nohp"])
@@ -663,3 +701,57 @@ def _phase_chrom_worker(
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def _dump_debug_tsv(
+    vid: str,
+    state: dict[str, dict[str, Any]],
+    rname_set: set[str],
+    svtype: str,
+    svlen: int,
+    pos0: int,
+    bp_tol: int,
+    *,
+    mode: str,
+) -> None:
+    """Write a per-read debug TSV for one locus.
+
+    Activated by setting env var SVPHASER_DEBUG_LOCUS to the variant ID.
+    Output is written to SVPHASER_DEBUG_DIR (default: current directory).
+    """
+    out_dir = os.environ.get("SVPHASER_DEBUG_DIR", ".")
+    os.makedirs(out_dir, exist_ok=True)
+    safe_vid = vid.replace("/", "_").replace(" ", "_")
+    path = os.path.join(out_dir, f"svphaser_debug_{safe_vid}.tsv")
+
+    _debug_logger.info("Writing per-read debug table for %s → %s", vid, path)
+
+    fieldnames = [
+        "query_name",
+        "hp_tag",
+        "in_rnames",
+        "svtype_branch",
+        "expected_svlen",
+        "breakpoint_pos0",
+        "bp_tolerance",
+        "accepted_support",
+        "mode",
+    ]
+
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        for qn, st in sorted(state.items()):
+            writer.writerow(
+                {
+                    "query_name": qn,
+                    "hp_tag": st.get("hp", "."),
+                    "in_rnames": "yes" if qn in rname_set else ("no" if rname_set else "N/A"),
+                    "svtype_branch": svtype,
+                    "expected_svlen": svlen,
+                    "breakpoint_pos0": pos0,
+                    "bp_tolerance": bp_tol,
+                    "accepted_support": "yes" if st.get("support") else "no",
+                    "mode": mode,
+                }
+            )
