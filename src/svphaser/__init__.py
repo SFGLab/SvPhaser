@@ -63,6 +63,9 @@ def phase(
     tie_to_hom_alt: bool = DEFAULT_TIE_TO_HOM_ALT,
     svp_info: bool = DEFAULT_SVP_INFO,
     threads: int | None = None,
+    size_match_required: bool = True,
+    size_tol_abs: int = 10,
+    size_tol_frac: float = 0.0,
 ) -> tuple[Path, Path]:
     """Phase *sv_vcf* using HP-tagged *bam*, writing outputs into *out_dir*.
 
@@ -114,6 +117,9 @@ def phase(
         tie_to_hom_alt=tie_to_hom_alt,
         svp_info=svp_info,
         threads=threads,
+        size_match_required=size_match_required,
+        size_tol_abs=size_tol_abs,
+        size_tol_frac=size_tol_frac,
     )
     return out_vcf, out_csv
 
