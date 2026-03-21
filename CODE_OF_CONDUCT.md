@@ -1,4 +1,4 @@
-# Code of Conduct _test_by_sachin
+# Code of Conduct 
 
 > Short version: **Be respectful, be inclusive, be constructive.** We’re here to build useful software and a healthy community around it.
 
