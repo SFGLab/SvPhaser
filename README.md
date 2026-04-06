@@ -14,21 +14,27 @@ It fills a critical gap in long-read SV analysis:
 
 * SV callers (e.g. Sniffles2) **discover variants**
 * SvPhaser **phases and genotypes them** (`1|0`, `0|1`, `1|1`, or `./.`)
-* with explicit **read-level evidence** and a quantitative **genotype quality (GQ)**
+* with explicit **read-level evidence** and a quantitative **genotype quality (GQ)** score
 
-SvPhaser is **caller-agnostic**, **deterministic**, and designed for **large-scale benchmarking and biological interpretation**.
+SvPhaser is:
+* **Caller-agnostic** — works with any SV VCF format
+* **Deterministic** — no random sampling or HMMs; reproducible results
+* **Designed for large-scale benchmarking and biological interpretation** — CSV-first output for transparent analysis
 
 ---
 
 ## Key features
 
-* **Post-hoc SV phasing** from HP-tagged BAM/CRAM (no re-calling required)
-* **Per-chromosome parallelization** (efficient on HPC and multi-core systems)
-* **SV-type-aware evidence detection** (DEL / INS / INV / BND / DUP)
-* **Deterministic Δ-based decision logic** (no HMMs, no sampling)
-* **Explicit confidence modeling** via GQ and reason codes
-* **CSV-first design** for transparent benchmarking and debugging
-* **VCF-compliant output** with rich `SVP_*` INFO annotations
+* **Post-hoc SV phasing** from HP-tagged BAM/CRAM — no re-calling needed
+* **Per-chromosome parallelization** — efficiently scales on HPC and multi-core systems
+* **SV-type-aware evidence detection** — specialized logic for DEL / INS / INV / BND / DUP
+* **Deterministic Δ-based decision logic** — haplotype imbalance thresholds, no sampling
+* **Strict size consistency controls** — optional size-matching for DEL/INS variants
+* **Explicit confidence scoring** — Phred-scaled GQ capped at 99, with derivable binning
+* **CSV-first design** — transparent per-SV metrics for benchmarking and debugging
+* **VCF-compliant output** — rich `SVP_*` INFO annotations for downstream analysis
+* **Read-level evidence tracking** — counts by haplotype (HP1, HP2, untagged) with reason codes
+* **Hybrid support counting** — combines HP-tagged + untagged reads with configurable thresholds
 
 ---
 
@@ -95,29 +101,79 @@ svphaser phase \
   --threads 32
 ```
 
+### Key parameters
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `--min-support` | 10 | Minimum total supporting reads (HP1+HP2+NOHP) to keep an SV; others are dropped to `./.` |
+| `--min-tagged-support` | 3 | Minimum HP-tagged reads (HP1+HP2) needed for directional phasing (`1\|0` or `0\|1`) |
+| `--major-delta` | 0.60 | Haplotype imbalance threshold (max HP count / tagged total) for strong consensus |
+| `--equal-delta` | 0.10 | Tie threshold (\|HP1-HP2\| / tagged total); below this, treated as both haplotypes support (→ `1\|1`) |
+| `--tie-to-hom-alt` | True | When tie detected and both haplotypes carry reads, emit `1\|1` (else `./.`) |
+| `--support-mode` | hybrid | Count method: `hybrid` (HP tagged preferred), `tagged-only`, or `all` |
+| `--gq-bins` | "30:High,10:Moderate" | Confidence cutoffs for soft binning into labels (e.g., High≥30, Moderate≥10) |
+| `--threads` | 1 | Number of parallel workers (one per chromosome) |
+| `--no-svp-info` | — | Disable writing `SVP_*` INFO annotations to output VCF |
+| `--size-match-required` | True | For DEL/INS: enforce size consistency between VCF record and read evidence |
+| `--size-tol-abs` | 10 | Absolute size tolerance (bp) for DEL/INS matching |
+| `--size-tol-frac` | 0.0 | Fractional size tolerance for DEL/INS matching |
+
 ---
 
 ## Outputs
 
 For an input `sample.vcf.gz`, SvPhaser produces:
 
-* **`sample_phased.csv`** — *primary analysis artifact*
+### Primary: `sample_phased.csv`
 
-  * Per-SV read support (`hp1`, `hp2`, `nohp`)
-  * Derived metrics (`tagged_total`, `support_total`, Δ)
-  * Final decisions (`gt`, `gq`, `reason`)
+A tabular summary with per-SV analysis, including:
 
-* **`sample_phased.vcf(.gz)`** — interoperability output
+* **Metadata**: `chrom`, `pos`, `id`, `end`, `svtype` (DEL/INS/INV/BND/DUP)
+* **Evidence counts**: `hp1`, `hp2`, `nohp` (haplotype-tagged and untagged supporting reads)
+* **Totals**: `tagged_total` (HP1+HP2), `support_total` (HP1+HP2+NOHP)
+* **Decision metrics**:
+  - `delta` — haplotype imbalance (max/tagged_total)
+  - `equal_delta` — absolute difference (|HP1-HP2|/tagged_total)
+  - `tag_frac` — fraction of support that is HP-tagged
+* **Final calls**:
+  - `gt` — phased genotype (`1|0`, `0|1`, `1|1`, or `./.`)
+  - `gq` — Phred-scaled genotype quality (0–99)
+  - `gq_label` — optional binned confidence level (e.g., "High", "Moderate")
+  - `reason` — explanation code (e.g., "MinSupport", "Tie", "LowTagged")
 
-  * `FORMAT/GT`, `FORMAT/GQ`
-  * Optional `SVP_*` INFO annotations when `--svp-info` is enabled
+### Secondary: `sample_phased.vcf`
 
-The CSV is intended for **benchmarking, visualization, and interpretation**;
-the VCF is a downstream-consumable representation.
+Interoperability output with:
+
+* **FORMAT fields**: `GT` (phased), `GQ` (quality)
+* **INFO annotations** (when `--svp-info` enabled):
+  - `SVP_HP1`, `SVP_HP2`, `SVP_NOHP` — read counts
+  - `SVP_TAGFRAC` — fraction tagged
+  - `SVP_DELTA` — haplotype imbalance
+  - `SVP_GQBIN` — confidence level label
+
+The CSV is the **primary artifact for analysis**; the VCF is for compatibility and downstream tools.
 
 ---
 
-## Algorithm & methodology
+## Phasing decision logic (quick reference)
+
+For each SV, SvPhaser counts reads by haplotype tag (HP=1, HP=2, or missing) and applies a **deterministic decision tree**:
+
+1. **Minimum support gate**: If `support_total (HP1+HP2+NOHP) < min_support` → emit `./.` and drop SV
+2. **Tagged support gate**: If `tagged_total (HP1+HP2) < min_tagged_support` → emit `./.`
+3. **Tie detection**: If `|HP1 - HP2| / tagged_total ≤ equal_delta`
+   - If `tie_to_hom_alt=True` and both HP1 > 0 and HP2 > 0 → emit `1|1` (both haplotypes carry)
+   - Else → emit `./.` (ambiguous)
+4. **Strong majority**: If `max(HP1, HP2) / tagged_total ≥ major_delta`
+   - If HP1 > HP2 → emit `1|0` (ALT on haplotype 1)
+   - If HP2 > HP1 → emit `0|1` (ALT on haplotype 2)
+5. **Else**: → emit `./.` (weak or no signal)
+
+**Genotype Quality (GQ)** is calculated from a **Phred-scaled binomial tail probability**:
+* For shallow coverage (N ≤ 200): exact binomial test
+* For deep coverage (N > 200): continuity-corrected normal approximation (avoids overflow)
+* Capped at 99 (Phred scale)
 
 A full, implementation-faithful description of the algorithm—including:
 
@@ -138,20 +194,67 @@ This document is the authoritative reference for reviewers and users seeking alg
 
 ```python
 from pathlib import Path
-from svphaser.phasing.io import phase_vcf
+from svphaser import phase
 
-phase_vcf(
-    Path("sample.vcf.gz"),
-    Path("sample.sorted_phased.bam"),
-    out_dir=Path("results"),
+# Simple usage
+out_vcf, out_csv = phase(
+    "sample.vcf.gz",
+    "sample.sorted_phased.bam",
+    out_dir="results",
+)
+
+# Full control
+out_vcf, out_csv = phase(
+    "sample.vcf.gz",
+    "sample.sorted_phased.bam",
+    out_dir="results",
     min_support=10,
     min_tagged_support=3,
     major_delta=0.60,
     equal_delta=0.10,
     support_mode="hybrid",
+    bp_window=100,
     dynamic_window=True,
     tie_to_hom_alt=True,
     gq_bins="30:High,10:Moderate",
+    threads=8,
+    size_match_required=True,
+    size_tol_abs=10,
+    size_tol_frac=0.0,
+)
+
+print(f"Phased VCF: {out_vcf}")
+print(f"Summary CSV: {out_csv}")
+```
+
+Returns a tuple: `(phased_vcf_path, summary_csv_path)`
+
+Alternatively, use the lower-level API directly:
+
+```python
+from svphaser.phasing.io import phase_vcf
+from svphaser.phasing.types import WorkerOpts
+
+opts = WorkerOpts(
+    min_support=10,
+    min_tagged_support=3,
+    major_delta=0.60,
+    equal_delta=0.10,
+    tie_to_hom_alt=True,
+    support_mode="hybrid",
+    bp_window=100,
+    dynamic_window=True,
+    size_match_required=True,
+    size_tol_abs=10,
+    size_tol_frac=0.0,
+    gq_bins=[(30, "High"), (10, "Moderate")],
+)
+
+phase_vcf(
+    Path("sample.vcf.gz"),
+    Path("sample.bam"),
+    out_dir=Path("results"),
+    worker_opts=opts,
     threads=8,
 )
 ```
@@ -162,14 +265,58 @@ phase_vcf(
 
 ```
 SvPhaser/
-├─ src/svphaser/        # core package
-├─ docs/                # methodology & design notes
-├─ tests/               # unit + regression tests
-├─ notebooks/           # benchmarking & analysis
-├─ pyproject.toml
-├─ README.md
-└─ CHANGELOG.md
+├─ src/svphaser/            # main package
+│  ├─ cli.py               # CLI interface (Typer app)
+│  ├─ __init__.py          # public API (phase() function)
+│  ├─ logging.py           # logging configuration
+│  ├─ phasing/             # core algorithms & I/O
+│  │  ├─ algorithms.py     # haplotype classification, GQ calculation (pure math)
+│  │  ├─ io.py            # orchestration, CSV/VCF writing (per-chromosome workers)
+│  │  ├─ _workers.py      # internal: per-chromosome worker, read evidence counting
+│  │  ├─ types.py         # WorkerOpts, CallTuple, type aliases
+│  │  └─ __init__.py      # public API exports
+│  └─ py.typed            # PEP 561 marker for type information
+│
+├─ tests/                   # unit & regression tests
+│  ├─ test_algorithms.py   # GQ, classification logic
+│  ├─ test_cli_smoke.py    # CLI smoke tests
+│  ├─ test_io.py          # CSV/VCF output validation
+│  ├─ test_workers.py     # BAM parsing, read counting
+│  └─ data/               # minimal test fixtures
+│
+├─ docs/                    # documentation
+│  ├─ Methodology.md       # algorithmic deep-dive (implementation-faithful)
+│  └─ Presentation/        # slide decks & figures
+│
+├─ Benchmarking_Analysis/   # perf analysis & results
+├─ pyproject.toml          # PEP 621 metadata, build config
+├─ requirements.txt        # runtime dependencies (mirror of pyproject)
+├─ requirements-dev.txt    # dev/test dependencies
+├─ README.md              # this file
+├─ CONTRIBUTING.md        # contributor guidelines
+├─ CODE_OF_CONDUCT.md     # community standards
+├─ LICENSE                # MIT
+└─ CHANGELOG.md           # version history
 ```
+
+### Core modules
+
+**`algorithms.py`** — Pure mathematics (no I/O)
+* `phasing_gq(n1, n2)` — Phred-scaled genotype quality (binomial tail + normal approx)
+* `classify_haplotype(n1, n2, ...)` — GT decision tree (returns `("1|0"|"0|1"|"1|1"|"./.", gq)`)
+* Threshold logic: `major_delta`, `equal_delta`, `min_support`, `tie_to_hom_alt`
+
+**`_workers.py`** — Per-chromosome logic
+* Read BAM for each chromosome, count HP tags
+* Apply size-consistency filters (DEL/INS)
+* Call `classify_haplotype()` for each SV
+* Return formatted results (gt, gq, reason)
+
+**`io.py`** — Orchestration & I/O
+* Parse VCF header, spawn workers (one per chromosome)
+* Merge per-chromosome results, apply global filters
+* Write phased VCF + CSV summary
+* Backfill optional columns (gq_label, tag_frac, etc.)
 
 ---
 
