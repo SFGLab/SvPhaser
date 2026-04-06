@@ -11,6 +11,7 @@ Patched for stricter DEL/INS evidence plumbing:
 - passes size-consistency options into WorkerOpts
 - preserves previous hardening around gt/gq propagation
 - writes richer SvPhaser INFO annotations
+- handles callers with missing VCF IDs more robustly
 """
 
 from __future__ import annotations
@@ -49,6 +50,27 @@ def _is_missing_scalar(x: Any) -> bool:
     if isinstance(x, str) and x.strip() == "":
         return True
     return False
+
+
+def _normalize_vcf_id(value: Any) -> str:
+    """Normalize a VCF ID, mapping missing/blank values to '.'."""
+    if _is_missing_scalar(value):
+        return "."
+    return str(value).strip()
+
+
+def _normalize_optional_int(value: Any) -> int | None:
+    """Normalize optional integer-like values from pandas/CSV."""
+    if _is_missing_scalar(value):
+        return None
+    return int(value)
+
+
+def _normalize_optional_str(value: Any) -> str | None:
+    """Normalize optional string-like values from pandas/CSV."""
+    if _is_missing_scalar(value):
+        return None
+    return str(value).strip()
 
 
 def _gq_label_from_bins(gq: Any, bins: list[GQBin]) -> str | None:
@@ -215,7 +237,9 @@ def phase_vcf(
     chroms: tuple[str, ...] = tuple(rdr.seqnames)
     rdr.close()
 
-    worker_args: list[tuple[str, Path, Path, WorkerOpts]] = [(c, sv_vcf, bam, opts) for c in chroms]
+    worker_args: list[tuple[str, Path, Path, WorkerOpts]] = [
+        (chrom, sv_vcf, bam, opts) for chrom in chroms
+    ]
 
     threads = threads or mp.cpu_count() or 1
     logger.info("SvPhaser ▶ workers: %d", threads)
@@ -267,9 +291,9 @@ def phase_vcf(
             pd.to_numeric(merged["support_total"], errors="coerce").fillna(0).astype(int)
         )
     else:
-        total_support = pd.to_numeric(merged["n1"], errors="coerce").fillna(0).astype(
-            int
-        ) + pd.to_numeric(merged["n2"], errors="coerce").fillna(0).astype(int)
+        n1 = pd.to_numeric(merged["n1"], errors="coerce").fillna(0).astype(int)
+        n2 = pd.to_numeric(merged["n2"], errors="coerce").fillna(0).astype(int)
+        total_support = n1 + n2
 
     keep = total_support >= int(min_support)
 
@@ -314,7 +338,7 @@ def _vcf_info_lookup(
     for rec in rdr:
         chrom = rec.CHROM
         pos = int(rec.POS)
-        vid = rec.ID or "."
+        vid = _normalize_vcf_id(rec.ID)
         end = int(rec.end) if getattr(rec, "end", None) is not None else int(pos)
         alt = ",".join(rec.ALT) if rec.ALT else "<N>"
 
@@ -436,7 +460,6 @@ def _vcf_safe_value(v: Any) -> str:
     """
     if isinstance(v, (tuple, list)):
         return ",".join(_vcf_safe_value(x) for x in v)
-    # numpy arrays
     if hasattr(v, "tolist"):
         return ",".join(_vcf_safe_value(x) for x in v.tolist())
     if isinstance(v, float):
@@ -499,6 +522,70 @@ def _compose_info_str(
     return ";".join(items) if items else "."
 
 
+def _match_full_key(
+    full_lookup: dict[SVKey, VcfRec],
+    *,
+    chrom: str,
+    pos: int,
+    vid: str,
+    end: int | None,
+    alt: str | None,
+) -> VcfRec | None:
+    """Try exact full-key lookup."""
+    if end is None or alt is None:
+        return None
+    return full_lookup.get((chrom, pos, vid, end, alt))
+
+
+def _match_legacy_key(
+    full_lookup: dict[SVKey, VcfRec],
+    legacy_index: dict[SVKeyLegacy, list[SVKey]],
+    *,
+    chrom: str,
+    pos: int,
+    vid: str,
+    end: int | None,
+) -> VcfRec | None:
+    """Try legacy lookup by (chrom, pos, vid), optionally narrowing by end."""
+    candidates = legacy_index.get((chrom, pos, vid), [])
+    if not candidates:
+        return None
+
+    if len(candidates) == 1:
+        return full_lookup[candidates[0]]
+
+    if end is None:
+        return None
+
+    end_matches = [key for key in candidates if key[3] == end]
+    if len(end_matches) == 1:
+        return full_lookup[end_matches[0]]
+
+    return None
+
+
+def _match_missing_id_fallback(
+    full_lookup: dict[SVKey, VcfRec],
+    *,
+    chrom: str,
+    pos: int,
+    end: int | None,
+    alt: str | None,
+) -> VcfRec | None:
+    """Fallback for callers that omit IDs: match by chrom/pos/end/alt only."""
+    if end is None or alt is None:
+        return None
+
+    matches = [
+        rec
+        for (f_chrom, f_pos, _f_vid, f_end, f_alt), rec in full_lookup.items()
+        if f_chrom == chrom and f_pos == pos and f_end == end and f_alt == alt
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _select_info_record(
     full_lookup: dict[SVKey, VcfRec],
     legacy_index: dict[SVKeyLegacy, list[SVKey]],
@@ -510,22 +597,36 @@ def _select_info_record(
     alt: str | None,
 ) -> VcfRec | None:
     """Pick the best matching input VCF record for this phased row."""
-    if end is not None and alt is not None:
-        hit = full_lookup.get((chrom, pos, vid, int(end), str(alt)))
-        if hit is not None:
-            return hit
+    hit = _match_full_key(
+        full_lookup,
+        chrom=chrom,
+        pos=pos,
+        vid=vid,
+        end=end,
+        alt=alt,
+    )
+    if hit is not None:
+        return hit
 
-    candidates = legacy_index.get((chrom, pos, vid), [])
-    if not candidates:
-        return None
+    hit = _match_legacy_key(
+        full_lookup,
+        legacy_index,
+        chrom=chrom,
+        pos=pos,
+        vid=vid,
+        end=end,
+    )
+    if hit is not None:
+        return hit
 
-    if len(candidates) == 1:
-        return full_lookup[candidates[0]]
-
-    if end is not None:
-        end_matches = [k for k in candidates if k[3] == int(end)]
-        if len(end_matches) == 1:
-            return full_lookup[end_matches[0]]
+    if vid == ".":
+        return _match_missing_id_fallback(
+            full_lookup,
+            chrom=chrom,
+            pos=pos,
+            end=end,
+            alt=alt,
+        )
 
     return None
 
@@ -552,12 +653,17 @@ def _write_phased_vcf(
         )
 
         for row in df.itertuples(index=False):
-            chrom = str(getattr(row, "chrom", "."))
+            chrom = str(getattr(row, "chrom", ".")).strip()
             pos = int(getattr(row, "pos", 0))
-            vid = str(getattr(row, "id", "."))
 
-            end = getattr(row, "end", None)
-            alt = getattr(row, "alt", None)
+            raw_vid = getattr(row, "id", ".")
+            vid = _normalize_vcf_id(raw_vid)
+
+            raw_end = getattr(row, "end", None)
+            end = _normalize_optional_int(raw_end)
+
+            raw_alt = getattr(row, "alt", None)
+            alt = _normalize_optional_str(raw_alt)
 
             gt = str(getattr(row, "gt", "./."))
             gq = str(getattr(row, "gq", "0"))
@@ -570,15 +676,17 @@ def _write_phased_vcf(
                 chrom=chrom,
                 pos=pos,
                 vid=vid,
-                end=int(end) if end is not None else None,
-                alt=str(alt) if alt is not None else None,
+                end=end,
+                alt=alt,
             )
             if info is None:
                 logger.warning(
-                    "Could not uniquely match VCF record for %s:%s %s",
+                    "Could not uniquely match VCF record for " "%s:%s id=%s end=%s alt=%s",
                     chrom,
                     pos,
                     vid,
+                    end,
+                    alt,
                 )
                 continue
 
